@@ -4,6 +4,25 @@
     [clojure.walk :as walk]
     [cljs.reader :refer [read-string]]))
 
+(defn cartesian-product
+  "All the ways to take one item from each sequence"
+  [& seqs]
+  (let [v-original-seqs (vec seqs)
+        step
+        (fn step [v-seqs]
+          (let [increment
+                (fn [v-seqs]
+                  (loop [i (dec (count v-seqs)), v-seqs v-seqs]
+                    (if (= i -1) nil
+                                 (if-let [rst (next (v-seqs i))]
+                                   (assoc v-seqs i rst)
+                                   (recur (dec i) (assoc v-seqs i (v-original-seqs i)))))))]
+            (when v-seqs
+              (cons (mapv first v-seqs)
+                    (lazy-seq (step (increment v-seqs)))))))]
+    (when (every? seq seqs)
+      (lazy-seq (step v-original-seqs)))))
+
 (defrecord Datom [e a v tx added]
   Object
   (toString [this]
@@ -137,14 +156,27 @@
   (cond
     (= '_ sym)    nil
     (symbol? sym) (get scope sym nil)
-    :else         sym))
+    :else sym))
+
+(defn- bind-symbol2 [sym scope]
+  (cond
+    (= '_ sym) [nil]
+    (symbol? sym) (get scope sym [nil])
+    :else [sym]))
 
 (defn- bind-symbols [form scope]
   (map #(bind-symbol % scope) form))
 
+(defn- bind-symbols2 [form scope]
+  (map #(bind-symbol2 % scope) form))
+
 (defn- search-datoms [source where scope]
   (search (bind-symbol source scope)
           (bind-symbols where scope)))
+
+(defn- search-datoms2 [source where scope]
+  (mapcat #(search (bind-symbol source scope) %)
+          (apply cartesian-product (bind-symbols2 where scope))))
 
 (defn- populate-scope [scope where datom]
   (->>
@@ -153,6 +185,16 @@
             [%1 %2])
       where
       datom)
+    (remove nil?)
+    (into scope)))
+
+(defn- populate-scope2 [scope where datom]
+  (->>
+    (map #(when (and (symbol? %1)
+                     (not (contains? scope %1)))
+           [%1 [%2]])
+         where
+         datom)
     (remove nil?)
     (into scope)))
 
@@ -168,6 +210,11 @@
   (let [bound-args (bind-symbols args scope)
         f          (or (built-ins f) (scope f))]
     (apply f bound-args)))
+
+(defn- call2 [[f & args] scope]
+  (let [bound-args (bind-symbols2 args scope)
+        f          (or (built-ins f) (scope f))]
+    (mapv #(apply f %) (apply cartesian-product bound-args))))
 
 (defn- looks-like? [pattern form]
   (cond
@@ -189,6 +236,7 @@
   (reduce #(set/union %1 (f %2)) #{} coll))
 
 (defn- bind-rule-branch [branch call-args context]
+  (.log js/console (str "<<<<<<<<<<<<< " [branch call-args context]))
   (let [[[rule & local-args] & body] branch
         replacements (zipmap local-args call-args)
         ;; replacing free vars to unique symbols
@@ -206,7 +254,56 @@
         [(concat ['-differ?] call-args prev-call-args)])
       bound-body)))
 
+(defn collect-binds [f coll]
+  (reduce #(do #_(prn %1 " !!!!! " (f %2)) (conj %1 (f %2))) [] coll))
+
+#_(defn bind-in+source [in+sources]
+  (let [[in source] (first in+sources)]
+    #_(prn (str in " ++++ " source " ---- "))
+    (condp looks-like? in
+      '[_ ...] (collect-binds #(bind-in+source [[(first in) %]]) source)
+      '[[*]] (collect-binds #(bind-in+source [[(first in) %]]) source)
+      '[*] (zipmap in source)
+      '% {}
+      '_ {in source})))
+
+(defn bind-in+source-helper [in+sources]
+  (let [[in source] (first in+sources)]
+    (prn (str in " ++++ " source " ---- "))
+    (condp looks-like? in
+      '[[*]] (recur [[(first in) (mapv first source)]])
+      '[*] (map #(zipmap in %) source) #_(zipmap in source)
+      '% {})))
+
+(defn bind-in+source [in+sources]
+  (let [[in source] (first in+sources)]
+    #_(prn (str in " ++++ " source " ---- "))
+    (condp looks-like? in
+      '[_ ...] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
+      '[[*]] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
+      '[*] (bind-in+source-helper [[in (mapv (fn [x] [x]) source)]])
+      '% (let [rules (if (string? source) (read-string source) source)]
+           {:__rules (group-by ffirst rules)})
+      '_ {in source})))
+
+#_(defn bind-in+source [in+sources]
+  (let [[in source] (first in+sources)]
+    (prn (str in " ++++ " source " ---- "))
+    (condp looks-like? in
+      '[_ ...] (recur [[[(first in)] (mapv (fn [x] [x]) source)]])
+      '[[*]] (recur [[(first in) (mapv first source)]])
+      '[*] (map #(zipmap in %) source)
+      '% {}
+      '_ {in source})))
+
+
 (defn- -q [in+sources wheres scope]
+  (.log js/console (str in+sources))
+  (.log js/console "---------------")
+  (.log js/console (str wheres))
+  (.log js/console "---------------")
+  (.log js/console (str scope))
+  (.log js/console "+++++++++++++++")
   (cond
     (not-empty in+sources) ;; parsing ins
       (let [[in source] (first in+sources)]
@@ -236,20 +333,19 @@
 
     (not-empty wheres) ;; parsing wheres
       (let [where (first wheres)]
-        
         ;; rule (rule ?a ?b ?c)
         (if-let [rule-branches (get (:__rules scope) (first where))]
           (let [[rule & call-args] where
                 next-scope (-> scope
-                             (update-in [:__rules_ctx rule] conj call-args)
-                             (update-in [:__rules_ctx :__depth] inc))
+                               (update-in [:__rules_ctx rule] conj call-args)
+                               (update-in [:__rules_ctx :__depth] inc))
                 next-wheres (next wheres)]
             (collect
               #(-q nil
                    (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
                    next-scope)
               rule-branches))
-          
+
           (condp looks-like? where
             '[[*]] ;; predicate [(pred ?a ?b ?c)]
               (when (call (first where) scope)
@@ -261,13 +357,91 @@
 
             '[*] ;; pattern
               (let [[source where] (parse-where where)
-                    found          (search-datoms source where scope)]
+                    found          (search-datoms source where scope)
+                    #__ #_(.log js/console (str "!!!!!!!!!!!  " found))]
                 (collect #(-q nil (next wheres) (populate-scope scope where %)) found))
             )))
    
    :else ;; reached bottom
-      #{(mapv scope (:__find scope))}
-    ))
+   #{(mapv scope (:__find scope))}
+   ))
+
+
+
+(defn- -q2 [in+sources wheres scope]
+  (.log js/console (str in+sources))
+  (.log js/console "---------------")
+  (.log js/console (str wheres))
+  (.log js/console "---------------")
+  (.log js/console (str scope))
+  (.log js/console "+++++++++++++++")
+  (cond
+    (not-empty in+sources) ;; parsing ins
+    (let [[in source] (first in+sources)]
+      (condp looks-like? in
+        '[_ ...] ;; collection binding [?x ...]
+        (recur (next in+sources) wheres (into scope [[(first in) source]]))
+
+        '[[*]]   ;; relation binding [[?a ?b]]
+        (recur (next in+sources) wheres (into scope [[(first in) source]]))
+
+        '[*]     ;; tuple binding [?a ?b]
+        #_(recur (concat
+                 (zipmap in source)
+                 (next in+sources))
+               wheres
+               scope)
+        (recur (next in+sources)
+               wheres
+               (into scope (mapv (fn [i s] [i [s]]) in source)))
+        '%       ;; rules
+        (let [rules (if (string? source) (read-string source) source)]
+          (recur (next in+sources)
+                 wheres
+                 (assoc scope :__rules (group-by ffirst rules))))
+
+        '_       ;; regular binding ?x
+        (recur (next in+sources)
+               wheres
+               (assoc scope in source))))
+
+    (not-empty wheres) ;; parsing wheres
+    (let [where (first wheres)]
+      ;; rule (rule ?a ?b ?c)
+      (if-let [rule-branches (get (:__rules scope) (first where))]
+        (let [[rule & call-args] where
+              next-scope (-> scope
+                             (update-in [:__rules_ctx rule] conj call-args)
+                             (update-in [:__rules_ctx :__depth] inc))
+              next-wheres (next wheres)]
+          (collect
+            #(-q nil
+                 (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
+                 next-scope)
+            rule-branches))
+
+        (condp looks-like? where
+          '[[*]] ;; predicate [(pred ?a ?b ?c)]
+          (when (call2 (first where) scope)
+            (recur nil (next wheres) scope))
+
+          '[[*] _] ;; function [(fn ?a ?b) ?res]
+          (let [res (call2 (first where) scope)]
+            (recur nil (next wheres) (into scope [[(second where) res]])))
+
+          '[*] ;; pattern
+          (let [[source where] (parse-where where)
+                found          (search-datoms2 source where scope)
+                #__ #_(.log js/console (str "!!!!!!!!!!!  " found))]
+            (collect #(-q2 nil (next wheres) (populate-scope2 scope where %)) found))
+          )))
+
+    :else ;; reached bottom
+    #_#{(mapv scope (:__find scope))}
+    (->> (mapv scope (:__find scope))
+         (apply cartesian-product)
+         set)))
+
 
 
 ;; AGGREGATES
