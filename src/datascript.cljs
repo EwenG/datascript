@@ -257,15 +257,7 @@
 (defn collect-binds [f coll]
   (reduce #(do #_(prn %1 " !!!!! " (f %2)) (conj %1 (f %2))) [] coll))
 
-#_(defn bind-in+source [in+sources]
-  (let [[in source] (first in+sources)]
-    #_(prn (str in " ++++ " source " ---- "))
-    (condp looks-like? in
-      '[_ ...] (collect-binds #(bind-in+source [[(first in) %]]) source)
-      '[[*]] (collect-binds #(bind-in+source [[(first in) %]]) source)
-      '[*] (zipmap in source)
-      '% {}
-      '_ {in source})))
+
 
 (defn bind-in+source-helper [in+sources]
   (let [[in source] (first in+sources)]
@@ -276,7 +268,7 @@
       '% {})))
 
 (defn bind-in+source [in+sources]
-  (let [[in source] (first in+sources)]
+  (let [[in source] in+sources]
     #_(prn (str in " ++++ " source " ---- "))
     (condp looks-like? in
       '[_ ...] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
@@ -286,15 +278,6 @@
            {:__rules (group-by ffirst rules)})
       '_ {in source})))
 
-#_(defn bind-in+source [in+sources]
-  (let [[in source] (first in+sources)]
-    (prn (str in " ++++ " source " ---- "))
-    (condp looks-like? in
-      '[_ ...] (recur [[[(first in)] (mapv (fn [x] [x]) source)]])
-      '[[*]] (recur [[(first in) (mapv first source)]])
-      '[*] (map #(zipmap in %) source)
-      '% {}
-      '_ {in source})))
 
 
 (defn- -q [in+sources wheres scope]
@@ -365,6 +348,15 @@
    :else ;; reached bottom
    #{(mapv scope (:__find scope))}
    ))
+
+
+(defn -q3 [in+sources wheres find]
+  (let [bound-in+sources (mapv bind-in+source in+sources)
+        q-tree (->> (conj bound-in+sources {:wheres wheres} {:find find})
+                    (apply merge))]
+    (.log js/console (str q-tree)))
+  #{}
+  )
 
 
 
@@ -525,6 +517,19 @@
         (mapv #(subvec % 0 (count (:find query))))
       (not-empty (filter sequential? (:find query)))
         (aggregate query ins->sources))))
+
+(defn q2 [query & sources]
+  (let [query        (if (sequential? query) (parse-query query) query)
+        ins->sources (zipmap (:in query '[$]) sources)
+        find         (concat
+                       (map #(if (sequential? %) (last %) %) (:find query))
+                       (:with query))
+        results      (-q3 ins->sources (:where query) find)]
+    (cond->> results
+             (:with query)
+             (mapv #(subvec % 0 (count (:find query))))
+             (not-empty (filter sequential? (:find query)))
+             (aggregate query ins->sources))))
 
 (defn entity [db eid]
   (when-let [attrs (not-empty (get-in db [:ea eid]))]
