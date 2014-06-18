@@ -1,3 +1,7 @@
+# WIP
+
+- Clojure reader pr/read support for datascript/DB
+
 # 0.1.5
 
 - `datoms` and `seek-datoms` API calls

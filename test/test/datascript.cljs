@@ -583,5 +583,16 @@
              [ [1 :name "Petr"]
                [3 :name "Sergey"] ])))))
 
+(deftest test-pr-read
+  (let [db (-> (d/empty-db)
+               (d/with [[:db/add 1 :name "Petr"]
+                        [:db/add 1 :age 44]
+                        [:db/add 2 :name "Ivan"]
+                        [:db/add 2 :age 25]
+                        [:db/add 3 :name "Sergey"]
+                        [:db/add 3 :age 11]]))]
+    (binding [cljs.reader/*tag-table* (atom {"datascript/DB" d/read-db})]
+      (is (= db (cljs.reader/read-string (pr-str db)))))))
+
 ;; (t/test-ns 'test.datascript)
 
