@@ -2,7 +2,10 @@
   (:require
     [clojure.set :as set]
     [clojure.walk :as walk]
-    [cljs.reader :refer [read-string]]))
+    [cljs.reader :refer [read-string]]
+    [clojure.zip :as zip]
+    [loom.graph :as g]
+    [loom.attr :as attr]))
 
 (defn cartesian-product
   "All the ways to take one item from each sequence"
@@ -236,7 +239,7 @@
   (reduce #(set/union %1 (f %2)) #{} coll))
 
 (defn- bind-rule-branch [branch call-args context]
-  (.log js/console (str "<<<<<<<<<<<<< " [branch call-args context]))
+  (.log js/console (str "<<<<<<<<<<<< " [branch call-args context]))
   (let [[[rule & local-args] & body] branch
         replacements (zipmap local-args call-args)
         ;; replacing free vars to unique symbols
@@ -246,7 +249,9 @@
                                        (or (replacements %)
                                            (symbol (str (name %) "__auto__" seqid)))
                                        %)
-                                     body)]
+                                     body)
+        _ (.log js/console (str "2 <<<<<<<<<<<<< " bound-body))
+        _ (.log js/console (str "3 <<<<<<<<<<<<< " context))]
     ;; recursion breaker
     ;; adding condition that call args cannot take same values as they took in any previous call to this rule
     (concat
@@ -261,11 +266,10 @@
 
 (defn bind-in+source-helper [in+sources]
   (let [[in source] (first in+sources)]
-    (prn (str in " ++++ " source " ---- "))
+    #_(prn (str in " ++++ " source " ---- "))
     (condp looks-like? in
       '[[*]] (recur [[(first in) (mapv first source)]])
-      '[*] (map #(zipmap in %) source) #_(zipmap in source)
-      '% {})))
+      '[*] (map #(zipmap in %) source) #_(zipmap in source))))
 
 (defn bind-in+source [in+sources]
   (let [[in source] in+sources]
@@ -275,8 +279,11 @@
       '[[*]] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
       '[*] (bind-in+source-helper [[in (mapv (fn [x] [x]) source)]])
       '% (let [rules (if (string? source) (read-string source) source)]
-           {:__rules (group-by ffirst rules)})
-      '_ {in source})))
+           [{:__rules (group-by ffirst rules)}])
+      '_ [{in source}])))
+
+(defn handle-sources [in+sources scope]
+  )
 
 
 
@@ -350,13 +357,75 @@
    ))
 
 
+
+(defn parse-rules [wheres scope]
+  (let [where (first wheres)]
+    ;; rule (rule ?a ?b ?c)
+    (if-let [rule-branches (get (:__rules scope) (first where))]
+      (let [[rule & call-args] where
+            next-scope (-> scope
+                           (update-in [:__rules_ctx rule] conj call-args)
+                           (update-in [:__rules_ctx :__depth] inc))
+            next-wheres (next wheres)]
+        #_rule-branches
+        (bind-rule-branch (first rule-branches) call-args (:__rules_ctx next-scope))
+        #_(collect
+          #(-q nil
+               (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
+               next-scope)
+          rule-branches))
+      (first where)
+      )))
+
+(defn get-node [loc]
+  (if (zip/branch? loc)
+    (first (zip/node loc))
+    (zip/node loc)))
+
+(defn loc->depth [loc]
+  (count (zip/path loc)))
+
+(defn loc->where [loc]
+  (let [node (get-node loc)]
+    (nth (:wheres node) (- (loc->depth loc) 1))))
+
+(defn process-node [loc]
+  (let [node (get-node loc)]
+    (when (not-empty node)
+      (let [where (loc->where loc)
+            loc (zip/edit loc #(assoc %1 :where where))]
+        #_(let [[source where] (parse-where where)
+              found          (search-datoms source where node)
+              _ (.log js/console (str "!!!!!!!!!!!  " found))])
+        loc))))
+
 (defn -q3 [in+sources wheres find]
-  (let [bound-in+sources (mapv bind-in+source in+sources)
-        q-tree (->> (conj bound-in+sources {:wheres wheres} {:find find})
-                    (apply merge))]
-    (.log js/console (str q-tree)))
-  #{}
-  )
+  (let [q-tree (map bind-in+source in+sources)
+        #_q-tree #_(->> (concat q-tree [[{:wheres wheres}]] [[{:find find}]])
+                    (apply cartesian-product)
+                    (map #(apply merge %))
+                    (concat [{}]))]
+    #_(let [loc (zip/zipper seq? rest (fn [r c] (concat r c)) q-tree)]
+      (let [loc (loop [loc (zip/next loc)]
+                  (if-not (= :end (last loc))
+                    (recur (zip/next (process-node loc)))
+                    loc))]
+        (.log js/console (str loc))))
+    (let [graph (g/digraph)
+          graph (g/add-nodes* graph ['find])
+          sources (map first in+sources)
+          graph (g/add-edges* graph [['find (first sources)]])
+          s-edges (map (fn [x y] [x y]) sources (rest sources))
+          graph (g/add-nodes* graph sources)
+          graph (g/add-edges* graph s-edges)
+          graph (g/add-nodes* graph wheres)
+          graph (g/add-edges* graph [[(last sources) (first wheres)]])
+          w-edges (map (fn [x y] [x y]) wheres (rest wheres))
+          graph (g/add-edges* graph w-edges)]
+      #_(prn (g/successors graph '$))
+      #_(prn [(last sources) (first wheres)])
+      (attr/add-attr graph 'find :scope {:find find}))
+    #_(bind-in+source (first in+sources))))
 
 
 

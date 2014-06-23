@@ -8,7 +8,8 @@
   
   :dependencies [
     [org.clojure/clojure "1.6.0"]
-    [org.clojure/clojurescript "0.0-2173"] ;; 0.0-2202
+    [org.clojure/clojurescript "0.0-2173"]     ;; 0.0-2202
+    [prismatic/plumbing "0.3.1"]
   ]
   :cljsbuild { 
     :builds [
