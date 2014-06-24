@@ -5,7 +5,8 @@
     [cljs.reader :refer [read-string]]
     [clojure.zip :as zip]
     [loom.graph :as g]
-    [loom.attr :as attr]))
+    [loom.attr :as attr]
+    [loom.alg :as alg]))
 
 (defn cartesian-product
   "All the ways to take one item from each sequence"
@@ -400,17 +401,7 @@
         loc))))
 
 (defn -q3 [in+sources wheres find]
-  (let [q-tree (map bind-in+source in+sources)
-        #_q-tree #_(->> (concat q-tree [[{:wheres wheres}]] [[{:find find}]])
-                    (apply cartesian-product)
-                    (map #(apply merge %))
-                    (concat [{}]))]
-    #_(let [loc (zip/zipper seq? rest (fn [r c] (concat r c)) q-tree)]
-      (let [loc (loop [loc (zip/next loc)]
-                  (if-not (= :end (last loc))
-                    (recur (zip/next (process-node loc)))
-                    loc))]
-        (.log js/console (str loc))))
+  (let [q-tree (map bind-in+source in+sources)]
     (let [graph (g/digraph)
           graph (g/add-nodes* graph ['find])
           sources (map first in+sources)
@@ -422,10 +413,10 @@
           graph (g/add-edges* graph [[(last sources) (first wheres)]])
           w-edges (map (fn [x y] [x y]) wheres (rest wheres))
           graph (g/add-edges* graph w-edges)]
-      #_(prn (g/successors graph '$))
-      #_(prn [(last sources) (first wheres)])
-      (attr/add-attr graph 'find :scope {:find find}))
-    #_(bind-in+source (first in+sources))))
+      (attr/add-attr graph 'find :scope '({:find find})))))
+
+(defn -execute-query [graph in+sources wheres]
+  (alg/bf-traverse graph))
 
 
 
@@ -593,12 +584,14 @@
         find         (concat
                        (map #(if (sequential? %) (last %) %) (:find query))
                        (:with query))
-        results      (-q3 ins->sources (:where query) find)]
-    (cond->> results
+        query-graph      (-q3 ins->sources (:where query) find)
+        run-graph (-execute-query query-graph ins->sources (:where query))]
+    #_(cond->> results
              (:with query)
              (mapv #(subvec % 0 (count (:find query))))
              (not-empty (filter sequential? (:find query)))
-             (aggregate query ins->sources))))
+             (aggregate query ins->sources))
+    run-graph))
 
 (defn entity [db eid]
   (when-let [attrs (not-empty (get-in db [:ea eid]))]
