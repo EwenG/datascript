@@ -3,7 +3,6 @@
     [clojure.set :as set]
     [clojure.walk :as walk]
     [cljs.reader :refer [read-string]]
-    [clojure.zip :as zip]
     [loom.graph :as g]
     [loom.attr :as attr]
     [loom.alg :as alg]))
@@ -240,7 +239,6 @@
   (reduce #(set/union %1 (f %2)) #{} coll))
 
 (defn- bind-rule-branch [branch call-args context]
-  (.log js/console (str "<<<<<<<<<<<< " [branch call-args context]))
   (let [[[rule & local-args] & body] branch
         replacements (zipmap local-args call-args)
         ;; replacing free vars to unique symbols
@@ -250,9 +248,7 @@
                                        (or (replacements %)
                                            (symbol (str (name %) "__auto__" seqid)))
                                        %)
-                                     body)
-        _ (.log js/console (str "2 <<<<<<<<<<<<< " bound-body))
-        _ (.log js/console (str "3 <<<<<<<<<<<<< " context))]
+                                     body)]
     ;; recursion breaker
     ;; adding condition that call args cannot take same values as they took in any previous call to this rule
     (concat
@@ -260,8 +256,6 @@
         [(concat ['-differ?] call-args prev-call-args)])
       bound-body)))
 
-(defn collect-binds [f coll]
-  (reduce #(do #_(prn %1 " !!!!! " (f %2)) (conj %1 (f %2))) [] coll))
 
 
 
@@ -289,12 +283,6 @@
 
 
 (defn- -q [in+sources wheres scope]
-  (.log js/console (str in+sources))
-  (.log js/console "---------------")
-  (.log js/console (str wheres))
-  (.log js/console "---------------")
-  (.log js/console (str scope))
-  (.log js/console "+++++++++++++++")
   (cond
     (not-empty in+sources) ;; parsing ins
       (let [[in source] (first in+sources)]
@@ -359,74 +347,150 @@
 
 
 
-(defn parse-rules [wheres scope]
-  (let [where (first wheres)]
-    ;; rule (rule ?a ?b ?c)
-    (if-let [rule-branches (get (:__rules scope) (first where))]
-      (let [[rule & call-args] where
-            next-scope (-> scope
-                           (update-in [:__rules_ctx rule] conj call-args)
-                           (update-in [:__rules_ctx :__depth] inc))
-            next-wheres (next wheres)]
-        #_rule-branches
-        (bind-rule-branch (first rule-branches) call-args (:__rules_ctx next-scope))
-        #_(collect
-          #(-q nil
-               (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
-               next-scope)
-          rule-branches))
-      (first where)
-      )))
 
-(defn get-node [loc]
-  (if (zip/branch? loc)
-    (first (zip/node loc))
-    (zip/node loc)))
 
-(defn loc->depth [loc]
-  (count (zip/path loc)))
+(defn remove-nodes+attrs [graph & nodes]
+  (let [graph (if (:attrs graph)
+                (loop [graph graph
+                       [node & rest] nodes]
+                  (if (nil? node)
+                    graph
+                    (recur (attr/remove-attr graph node :attrs)
+                           rest)))
+                graph)]
+    (g/remove-nodes* graph nodes)))
 
-(defn loc->where [loc]
-  (let [node (get-node loc)]
-    (nth (:wheres node) (- (loc->depth loc) 1))))
+(defn add-attrs-for-nodes [g nodes attrs]
+  (loop [graph g
+         nodes nodes
+         attrs attrs]
+    (if-let [node (first nodes)]
+      (let [attr (first attrs)
+            graph (attr/add-attr graph node :attrs attr)]
+        (recur graph (rest nodes) (rest attrs)))
+      graph)))
 
-(defn process-node [loc]
-  (let [node (get-node loc)]
-    (when (not-empty node)
-      (let [where (loc->where loc)
-            loc (zip/edit loc #(assoc %1 :where where))]
-        #_(let [[source where] (parse-where where)
-              found          (search-datoms source where node)
-              _ (.log js/console (str "!!!!!!!!!!!  " found))])
-        loc))))
+(defn wheres->branch [wheres]
+  (let [graph (g/digraph)
+        nodes (map (fn [] (gensym ::node)) wheres)
+        graph (g/add-nodes* graph nodes)
+        edges (map (fn [x y] [x y]) nodes (rest nodes))
+        graph (g/add-edges* graph edges)]
+    (add-attrs-for-nodes graph nodes (map (fn [s] {:where s}) wheres))))
 
-(defn -q3 [in+sources wheres find]
-  (let [q-tree (map bind-in+source in+sources)]
-    (let [graph (g/digraph)
-          graph (g/add-nodes* graph ['find])
-          sources (map first in+sources)
-          graph (g/add-edges* graph [['find (first sources)]])
-          s-edges (map (fn [x y] [x y]) sources (rest sources))
-          graph (g/add-nodes* graph sources)
-          graph (g/add-edges* graph s-edges)
-          graph (g/add-nodes* graph wheres)
-          graph (g/add-edges* graph [[(last sources) (first wheres)]])
-          w-edges (map (fn [x y] [x y]) wheres (rest wheres))
-          graph (g/add-edges* graph w-edges)]
-      (attr/add-attr graph 'find :scope '({:find find})))))
+(defn rule->where-graph [where-rule rules previous-calls]
+  (let [rule-branches (get rules (first where-rule))]
+    (let [[rule & call-args] where-rule
+          new-previous-calls (-> previous-calls
+                                 (update-in [:__rules_ctx rule] conj call-args)
+                                 (update-in [:__rules_ctx :__depth] inc))]
+      (->> rule-branches (map #(bind-rule-branch % call-args (:__rules_ctx previous-calls)))
+           (map wheres->branch)
+           (concat [new-previous-calls])))))
 
-(defn -execute-query [graph in+sources wheres]
-  (alg/bf-traverse graph))
+(defn node->branches [graph node branches]
+  (let [predecessors (g/predecessors graph node)
+        successors (g/successors graph node)
+        branch-edges (mapcat g/edges branches)
+        branch-nodes (mapcat g/nodes branches)
+        first-nodes (map (comp first g/nodes) branches)
+        last-nodes (map (comp last g/nodes) branches)]
+    (let [graph (remove-nodes+attrs graph node)
+          graph (g/add-edges* graph branch-edges)
+          graph (g/add-nodes* graph branch-nodes)
+          p-edges (for [p predecessors
+                        b first-nodes]
+                    [p b])
+          s-edges (for [s successors
+                        b last-nodes]
+                    [b s])
+          graph (g/add-edges* graph (concat p-edges s-edges))
+          attrs (apply merge (concat (:attrs graph) (map :attrs branches)))
+          graph (assoc graph :attrs attrs)]
+      graph)))
 
+
+
+(defn rule-nodes->branches [graph nodes rules previous-calls]
+  (for [node nodes
+        :let [rule (:where (attr/attr graph node :attrs))
+              [new-previous-calls & branches] (rule->where-graph rule rules previous-calls)]]
+    [node branches new-previous-calls]))
+
+
+(defn expand-rules [graph rules]
+  (loop [graph graph
+         [node & rest] (map (fn [n] [n {}])
+                            (g/nodes graph))]
+    (if (nil? node)
+      graph
+      (let [[node prev-calls] node]
+        (if-let [where (:where (attr/attr graph node :attrs))]
+          (if-let [rule-branches (get rules (first where))]
+            (let [[new-prev-calls & branches] (rule->where-graph where rules prev-calls)
+                  new-graph (node->branches graph node branches)
+                  new-nodes (mapcat g/nodes branches)
+                  new-nodes (map (fn [n] [n new-prev-calls]) new-nodes)]
+              (recur new-graph (concat new-nodes rest)))
+            (recur graph rest))
+          (recur graph rest))))))
+
+(defn build-request-graph [in+sources wheres find]
+  (let [graph (g/digraph)
+        find-node (gensym ::node)
+        sources (map first in+sources)
+        source-nodes (map (fn [] (gensym ::node)) sources)
+        graph (g/add-edges* graph [[find-node (first source-nodes)]])
+        s-edges (map (fn [x y] [x y]) source-nodes (rest source-nodes))
+        graph (g/add-edges* graph s-edges)
+        where-nodes (map (fn [] (gensym ::node)) wheres)
+        graph (g/add-edges* graph [[(last source-nodes) (first where-nodes)]])
+        w-edges (map (fn [x y] [x y]) where-nodes (rest where-nodes))
+        graph (g/add-edges* graph w-edges)
+        graph (attr/add-attr graph find-node :attrs {:find find})
+        graph (add-attrs-for-nodes graph source-nodes (map (fn [s] {:source s}) sources))
+        graph (add-attrs-for-nodes graph where-nodes (map (fn [s] {:where s}) wheres))]
+    graph))
+
+(defn execute-query [graph in+sources wheres]
+  (loop [graph graph
+         [node & rest] (alg/bf-traverse graph)]
+    (if (nil? node)
+      graph
+      (let [attrs (attr/attr graph node :attrs)
+            new-attrs
+            (cond
+              (:find attrs) (assoc attrs :envs (list {:find (:find attrs)}))
+              (:source attrs) (let [sources (bind-in+source
+                                              [(:source attrs) (get in+sources (:source attrs))])
+                                    pred-envs (mapcat #(:envs (attr/attr graph % :attrs))
+                                                      (g/predecessors graph node))
+                                    envs (for [pred-env pred-envs
+                                               source sources]
+                                           (merge pred-env source))]
+                                (assoc attrs :envs envs))
+              (:where attrs) nil)]
+        (recur (attr/add-attr graph node :attrs new-attrs) rest)))))
+
+
+#_(condp looks-like? where
+  '[[*]] ;; predicate [(pred ?a ?b ?c)]
+  (when (call (first where) scope)
+    (recur nil (next wheres) scope))
+
+  '[[*] _] ;; function [(fn ?a ?b) ?res]
+  (let [res (call (first where) scope)]
+    (recur [[(second where) res]] (next wheres) scope))
+
+  '[*] ;; pattern
+  (let [[source where] (parse-where where)
+        found          (search-datoms source where scope)
+        #__ #_(.log js/console (str "!!!!!!!!!!!  " found))]
+    (collect #(-q nil (next wheres) (populate-scope scope where %)) found))
+  )
 
 
 (defn- -q2 [in+sources wheres scope]
-  (.log js/console (str in+sources))
-  (.log js/console "---------------")
-  (.log js/console (str wheres))
-  (.log js/console "---------------")
-  (.log js/console (str scope))
-  (.log js/console "+++++++++++++++")
   (cond
     (not-empty in+sources) ;; parsing ins
     (let [[in source] (first in+sources)]
@@ -584,8 +648,8 @@
         find         (concat
                        (map #(if (sequential? %) (last %) %) (:find query))
                        (:with query))
-        query-graph      (-q3 ins->sources (:where query) find)
-        run-graph (-execute-query query-graph ins->sources (:where query))]
+        query-graph      (build-request-graph ins->sources (:where query) find)
+        run-graph (execute-query query-graph ins->sources (:where query))]
     #_(cond->> results
              (:with query)
              (mapv #(subvec % 0 (count (:find query))))
@@ -646,4 +710,3 @@
 
 (defn unlisten! [conn key]
   (swap! (:listeners (meta conn)) dissoc key))
-
