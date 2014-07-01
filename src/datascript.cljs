@@ -303,7 +303,7 @@
       (pattern form)))
 
 (defn- collect [f coll]
-  (persistent! (reduce #(reduce conj! %1 (f %2)) (transient #{}) coll)))
+  (persistent! (reduce #(reduce conj! %1 (f %2)) (transient []) coll)))
 
 (defn- bind-rule-branch [branch call-args context]
   (let [[[rule & local-args] & body] branch
@@ -385,6 +385,53 @@
    :else ;; reached bottom
       #{(mapv scope (:__find scope))}
     ))
+
+(defn bind-in+source-helper [in+sources]
+  (let [[in source] (first in+sources)]
+    (condp looks-like? in
+      '[[*]] (recur [[(first in) (mapv first source)]])
+      '[*] (map #(zipmap in %) source) #_(zipmap in source))))
+
+(defn bind-in+source [in+sources]
+  (let [[in source] in+sources]
+    (condp looks-like? in
+      '[_ ...] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
+      '[[*]] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
+      '[*] (bind-in+source-helper [[in (mapv (fn [x] [x]) source)]])
+      '% (let [rules (if (string? source) (read-string source) source)]
+           [{:__rules (group-by ffirst rules)}])
+      '_ [{in source}])))
+
+
+
+(defn q-helper [in+sources wheres scope]
+  (cond
+    (not-empty in+sources)
+    (let [[in source] (first in+sources)]
+      (condp looks-like? in
+        '[_ ...]                                            ;; collection binding [?x ...]
+        (collect #(q-helper (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+
+        '[[*]]                                              ;; relation binding [[?a ?b]]
+        (collect #(q-helper (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+
+        '[*]                                                ;; tuple binding [?a ?b]
+        (q-helper (concat
+                    (zipmap in source)
+                    (next in+sources))
+                  wheres
+                  scope)
+        '%                                                  ;; rules
+        (let [rules (if (string? source) (read-string source) source)]
+          (q-helper (next in+sources)
+                    wheres
+                    [(assoc (first scope) :__rules (group-by ffirst rules))]))
+
+        '_                                                  ;; regular binding ?x
+        (conj scope (q-helper (next in+sources)
+                              wheres
+                              [(assoc (first scope) in source)]))))
+    :else scope))
 
 
 ;; AGGREGATES
@@ -468,6 +515,20 @@
         (mapv #(subvec % 0 (count (:find query))))
       (not-empty (filter sequential? (:find query)))
         (aggregate query ins->sources))))
+
+(defn q2 [query & sources]
+  (let [query        (if (sequential? query) (parse-query query) query)
+        ins->sources (zipmap (:in query '[$]) sources)
+        find         (concat
+                       (map #(if (sequential? %) (last %) %) (:find query))
+                       (:with query))
+        results      (q-helper ins->sources (:where query) [{:__find find}])]
+    #_(cond->> results
+             (:with query)
+             (mapv #(subvec % 0 (count (:find query))))
+             (not-empty (filter sequential? (:find query)))
+             (aggregate query ins->sources))
+    results))
 
 (defn entity [db eid]
   (when-let [datoms (not-empty (-search db [eid]))]
@@ -558,4 +619,54 @@
          (apply btset-by cmp-datoms-avet datoms)
          (reduce max 0 (map :e datoms))
          (reduce max tx0 (map :tx datoms)))))
+
+
+
+
+(comment
+
+  (defn load-app []
+    (let [conn (create-conn)]
+      (transact! conn [{:db/id -1
+                           :password/label "Password1"
+                           :state/dragging false
+                           :state/sort-index 0}
+                          {:db/id -2
+                           :password/label "Password2"
+                           :state/dragging false
+                           :state/sort-index 1}
+                          {:db/id -3
+                           :view/current :home}
+                          {:db/id -4
+                           :channel/source :page-load
+                           :channel/mult :my-mult}
+                          {:db/id -5
+                           :channel/source :pwd-pos
+                           :channel/mult :my-other-mult}])
+      conn))
+
+  (def app (load-app))
+
+
+
+
+
+
+
+
+
+
+  (q2 '[:find ?k ?v :in [[?k ?v] ...] :where [(> ?v 1)]] {:a 1, :b 2, :c 3})
+
+  (q2 '[:find ?view
+       :where [_ :view/current ?view]]
+     @app)
+
+
+  (q2 '[:find ?view
+        :in $ %
+        :where (current ?view)]
+      @app '[[(current ?view) [_ :view/current ?view]]])
+
+  )
 
