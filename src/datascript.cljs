@@ -386,52 +386,109 @@
       #{(mapv scope (:__find scope))}
     ))
 
-(defn bind-in+source-helper [in+sources]
+
+(defn in+source-tree-helper [in+sources]
   (let [[in source] (first in+sources)]
     (condp looks-like? in
       '[[*]] (recur [[(first in) (mapv first source)]])
-      '[*] (map #(zipmap in %) source) #_(zipmap in source))))
+      '[*] (mapv #(mapv (fn [x y] [x y]) in %) source))))
 
-(defn bind-in+source [in+sources]
+(defn in+source-tree [in+sources]
   (let [[in source] in+sources]
     (condp looks-like? in
-      '[_ ...] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
-      '[[*]] (bind-in+source-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
-      '[*] (bind-in+source-helper [[in (mapv (fn [x] [x]) source)]])
-      '% (let [rules (if (string? source) (read-string source) source)]
-           [{:__rules (group-by ffirst rules)}])
-      '_ [{in source}])))
+      '[_ ...] (in+source-tree-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
+      '[[*]] (in+source-tree-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
+      '[*] (in+source-tree-helper [[in [source]]])
+      '_ [in source])))
 
 
+(defn maybe-conj-2 [x y]
+  (if (nil? y)
+    x
+    (conj x y)))
 
-(defn q-helper [in+sources wheres scope]
+(defn in+sources-tree [in+sources]
+  (println in+sources "\n")
+  (if (empty? in+sources)
+    nil
+    (let [[in source] (first in+sources)]
+      (condp looks-like? in
+        '[_ ...]                                            ;; collection binding [?x ...]
+        (mapv #(in+sources-tree (concat % (next in+sources))) (in+source-tree [in source]))
+
+        '[[*]]                                              ;; relation binding [[?a ?b]]
+        (mapv #(in+sources-tree (concat % (next in+sources))) (in+source-tree [in source]))
+
+        '[*]                                                ;; tuple binding [?a ?b]
+        (recur (concat (mapv (fn [x y] [x y]) in source)
+                                 (next in+sources)))
+
+        '_                                                  ;; regular binding ?x
+        (maybe-conj-2 [[in source]] (in+sources-tree (next in+sources)))))))
+
+
+(defn maybe-conj [x y]
+  (if (nil? x)
+    y
+    (conj x y)))
+
+(defn q-helper [in+sources wheres node scope]
   (cond
     (not-empty in+sources)
     (let [[in source] (first in+sources)]
       (condp looks-like? in
         '[_ ...]                                            ;; collection binding [?x ...]
-        (collect #(q-helper (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+        (into node (mapv #(q-helper (concat [[(first in) %]]
+                                            (next in+sources))
+                                    wheres nil scope)
+                         source))
 
         '[[*]]                                              ;; relation binding [[?a ?b]]
-        (collect #(q-helper (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+        (into node (mapv #(q-helper (concat [[(first in) %]]
+                                            (next in+sources))
+                                    wheres nil scope)
+                         source))
 
         '[*]                                                ;; tuple binding [?a ?b]
-        (q-helper (concat
-                    (zipmap in source)
-                    (next in+sources))
-                  wheres
-                  scope)
+        (maybe-conj node (q-helper (concat
+                                     (zipmap in source)
+                                     (next in+sources))
+                                   wheres
+                                   nil
+                                   scope))
         '%                                                  ;; rules
         (let [rules (if (string? source) (read-string source) source)]
-          (q-helper (next in+sources)
-                    wheres
-                    [(assoc (first scope) :__rules (group-by ffirst rules))]))
+          (conj node (q-helper (next in+sources)
+                               wheres
+                               [(assoc scope :__rules (group-by ffirst rules)
+                                             :rule '%)]
+                               (assoc scope :__rules (group-by ffirst rules)))))
 
         '_                                                  ;; regular binding ?x
-        (conj scope (q-helper (next in+sources)
-                              wheres
-                              [(assoc (first scope) in source)]))))
-    :else scope))
+        (maybe-conj node (q-helper (next in+sources)
+                                   wheres
+                                   [(assoc scope in source
+                                                 :source in)]
+                                   (assoc scope in source)))))
+    (not-empty wheres)
+    (let [where (first wheres)]
+
+
+
+      (condp looks-like? where
+        '[[*]] ;; predicate [(pred ?a ?b ?c)]
+        (when (call (first where) scope)
+          (conj node (q-helper nil (next wheres) node scope)))
+        '[*]                                                ;; pattern
+        (let [[source where] (parse-where where)
+              found (search-datoms source where scope)]
+          (into node (mapv #(q-helper nil (next wheres)
+                                      [(-> (populate-scope scope where %)
+                                           (assoc :where where
+                                                  :datom %))]
+                                      (populate-scope scope where %)) found)))
+        ))
+    :else node))
 
 
 ;; AGGREGATES
@@ -522,7 +579,7 @@
         find         (concat
                        (map #(if (sequential? %) (last %) %) (:find query))
                        (:with query))
-        results      (q-helper ins->sources (:where query) [{:__find find}])]
+        results      (q-helper ins->sources (:where query) [{:__find find}] {:__find find})]
     #_(cond->> results
              (:with query)
              (mapv #(subvec % 0 (count (:find query))))
@@ -658,15 +715,44 @@
 
   (q2 '[:find ?k ?v :in [[?k ?v] ...] :where [(> ?v 1)]] {:a 1, :b 2, :c 3})
 
+
+
+
+
   (q2 '[:find ?view
-       :where [_ :view/current ?view]]
-     @app)
+        :where [_ :view/current ?view]]
+      @app)
+
+
+
+
+
 
 
   (q2 '[:find ?view
         :in $ %
         :where (current ?view)]
       @app '[[(current ?view) [_ :view/current ?view]]])
+
+
+
+  (in+sources-tree '{[[[?k ?v ?c]] ...] [[[:a 1 1]] [[:b 2 2]] [[:c 3 3]]]})
+
+  (in+sources-tree '{[[?k ?v ?c] ...] [[:a 1 1] [:b 2 2] [:c 3 3]]})
+
+  (in+sources-tree '{[[[?k ?v ?c]] ...] [[[:a 1 1]] [[:b 2 2]] [[:c 3 3]]] :e 2})
+
+
+
+  (in+source-tree (first '{[[?k ?v ?c] ...] [[:a 1 1] [:b 2 2] [:c 3 3]]}))
+  (in+source-tree (first '{[[[?k ?v ?c]] ...] [[[:a 1 1]] [[:b 2 2]] [[:c 3 3]]]}))
+  (in+source-tree (first '{[?v ...] [:a :b :c]}))
+  (in+source-tree (first '{[?word ?val] ["hello" "vallllll"]}))
+  (in+source-tree (first '{[[?monster ?heads]] [["Medusa" 1] ["Cyclops" 1] ["Chimera" 1]]}))
+
+
+
+
 
   )
 
