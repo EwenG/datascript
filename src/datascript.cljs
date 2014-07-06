@@ -303,7 +303,7 @@
       (pattern form)))
 
 (defn- collect [f coll]
-  (persistent! (reduce #(reduce conj! %1 (f %2)) (transient []) coll)))
+  (persistent! (reduce #(reduce conj! %1 (f %2)) (transient #{}) coll)))
 
 (defn- bind-rule-branch [branch call-args context]
   (let [[[rule & local-args] & body] branch
@@ -399,40 +399,136 @@
       '[_ ...] (in+source-tree-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
       '[[*]] (in+source-tree-helper [[[(first in)] (mapv (fn [x] [x]) source)]])
       '[*] (in+source-tree-helper [[in [source]]])
-      '_ [in source])))
+      '_ [[[in source]]])))
 
 
-(defn maybe-conj-2 [x y]
-  (if (nil? y)
-    x
-    (conj x y)))
 
 (defn in+sources-tree [in+sources]
-  (println in+sources "\n")
   (if (empty? in+sources)
     nil
     (let [[in source] (first in+sources)]
       (condp looks-like? in
         '[_ ...]                                            ;; collection binding [?x ...]
-        (mapv #(in+sources-tree (concat % (next in+sources))) (in+source-tree [in source]))
+        (-> (mapcat #(in+sources-tree (concat % (next in+sources)))
+                    (in+source-tree [in source]))
+            vec)
 
         '[[*]]                                              ;; relation binding [[?a ?b]]
-        (mapv #(in+sources-tree (concat % (next in+sources))) (in+source-tree [in source]))
+        (-> (mapcat #(in+sources-tree (concat % (next in+sources)))
+                    (in+source-tree [in source]))
+            vec)
 
         '[*]                                                ;; tuple binding [?a ?b]
         (recur (concat (mapv (fn [x y] [x y]) in source)
                                  (next in+sources)))
 
         '_                                                  ;; regular binding ?x
-        (maybe-conj-2 [[in source]] (in+sources-tree (next in+sources)))))))
+        [(into [{:type :source
+                 :source in
+                 in source}]
+               (in+sources-tree (next in+sources)))]))))
 
 
-(defn maybe-conj [x y]
+(defn wheres-tree [wheres rules]
+  (if (empty? wheres)
+    nil
+    (let [where (first wheres)]
+      (if-let [rule-branches (get (:__rules rules) (first where))]
+        (let [[rule & call-args] where
+              next-rules (-> rules
+                             (update-in [:__rules_ctx rule] conj call-args)
+                             (update-in [:__rules_ctx :__depth] inc))
+              next-wheres (next wheres)]
+
+          (-> (mapcat #(wheres-tree (concat (bind-rule-branch
+                                              %
+                                              call-args
+                                              (:__rules_ctx rules))
+                                            next-wheres)
+                                    next-rules)
+                      rule-branches)
+              vec))
+        ;Each subtree is a lazy seq since each subtree can be infinite (if a rule is recursive).
+        ;Without lazy-seq, wheres-tree would potentially be an infinite loop
+        [(lazy-seq (into [{:type  :where
+                            :where where}]
+                          (wheres-tree (next wheres) rules)))]))))
+
+
+
+
+(defn tree-collect [tree]
+  (reduce #(if-let [collect (-> %2 first :collect)]
+            (conj %1 collect)
+            %1)
+          #{}
+          (tree-seq next rest tree)))
+
+(defn process-where-node [{:keys [where]} scope]
+  (condp looks-like? where
+    '[[*]]                                                  ;; predicate [(pred ?a ?b ?c)]
+    (if (call (first where) scope)
+      [scope] [])
+    '[[*] _]                                                ;; function [(fn ?a ?b) ?res]
+    (let [res (call (first where) scope)
+          bindings-branches (in+source-tree [(second where) res])]
+      (vec (for [binding-branch bindings-branches]
+             (reduce (fn [scope binding]
+                       (assoc scope (first binding) (second binding)))
+                     scope
+                     binding-branch))))
+    '[*]                                                    ;; pattern
+    (let [[source where] (parse-where where)
+          found (search-datoms source where scope)]
+      (mapv #(-> (populate-scope scope where %)
+                 (assoc :datom %))
+            found))))
+
+(defn q-tree-wheres [wheres scope]
+  (let [new-nodes (process-where-node (first wheres) scope)]
+    (if (nil? (next wheres))
+      (mapv (fn [new-node]
+              [(assoc new-node :collect (mapv new-node (:__find new-node)))])
+            new-nodes)
+      (mapv (fn [new-node]
+              (into [new-node] (-> (mapcat #(q-tree-wheres % new-node) (lazy-seq (next wheres)))
+                                   vec)))
+            new-nodes))))
+
+
+(defn process-source-node [{:keys [source] :as node} scope]
+  (assoc scope source (get node source)))
+
+(defn q-tree-in+sources [in+sources wheres scope]
+  (let [new-node (process-source-node (first in+sources) scope)]
+    (if (empty? (next in+sources))
+      #_(do (println (-> (second wheres) first) "\n") nil)
+      #_(if (nil? wheres)
+        [[(assoc new-node :collect (mapv new-node (:__find new-node)))]]
+        [(into [new-node]
+               (mapcat #(q-tree-wheres % new-node) wheres))])
+      (if (nil? wheres)
+        [[(assoc new-node :collect (mapv new-node (:__find new-node)))]]
+        [(into [new-node]
+               (-> (mapcat #(q-tree-wheres % new-node) wheres)
+                   vec))])
+      [(into [new-node]
+             (-> (mapcat #(q-tree-in+sources % wheres new-node) (next in+sources))
+                 vec))])))
+
+(defn q-tree [tree in+sources wheres]
+  (let [tree (into tree (-> (mapcat #(q-tree-in+sources % wheres (first tree)) in+sources)
+                            vec))]
+    #_(println tree "\n")
+    (tree-collect tree)))
+
+
+#_(defn maybe-conj [x y]
   (if (nil? x)
     y
     (conj x y)))
 
-(defn q-helper [in+sources wheres node scope]
+#_(defn q-helper [in+sources wheres node scope]
   (cond
     (not-empty in+sources)
     (let [[in source] (first in+sources)]
@@ -573,19 +669,27 @@
       (not-empty (filter sequential? (:find query)))
         (aggregate query ins->sources))))
 
+(defn parse-rules [source]
+  (let [rules (if (string? source) (read-string source) source)]
+    {:__rules (group-by ffirst rules)}))
+
 (defn q2 [query & sources]
   (let [query        (if (sequential? query) (parse-query query) query)
         ins->sources (zipmap (:in query '[$]) sources)
+        rules (parse-rules (get ins->sources '%))
+        ins->sources (dissoc ins->sources '%)
         find         (concat
                        (map #(if (sequential? %) (last %) %) (:find query))
                        (:with query))
-        results      (q-helper ins->sources (:where query) [{:__find find}] {:__find find})]
-    #_(cond->> results
+        in+sources (in+sources-tree ins->sources)
+        wheres (wheres-tree (:where query) rules)
+        results (q-tree [{:__find find}] in+sources wheres)
+        #_results      #_(q-helper ins->sources (:where query) [{:__find find}] {:__find find})]
+    (cond->> results
              (:with query)
              (mapv #(subvec % 0 (count (:find query))))
              (not-empty (filter sequential? (:find query)))
-             (aggregate query ins->sources))
-    results))
+             (aggregate query ins->sources))))
 
 (defn entity [db eid]
   (when-let [datoms (not-empty (-search db [eid]))]
@@ -724,6 +828,21 @@
       @app)
 
 
+  (let [db [                  [5 :follow 3]
+                              [1 :follow 2] [2 :follow 3] [3 :follow 4] [4 :follow 6]
+                              [2         :follow           4]]]
+    (q2 '[:find  ?e2
+           :in    $ ?e1 %
+           :where (follow ?e1 ?e2)]
+         db
+         1
+         '[[(follow ?e1 ?e2)
+            [?e1 :follow ?e2]]
+           [(follow ?e1 ?e2)
+            [?e1 :follow ?t]
+            (follow ?t ?e2)]]))
+
+  #_[(follow ?e1 ?e2)]
 
 
 
@@ -736,11 +855,12 @@
 
 
 
+
   (in+sources-tree '{[[[?k ?v ?c]] ...] [[[:a 1 1]] [[:b 2 2]] [[:c 3 3]]]})
-
   (in+sources-tree '{[[?k ?v ?c] ...] [[:a 1 1] [:b 2 2] [:c 3 3]]})
-
   (in+sources-tree '{[[[?k ?v ?c]] ...] [[[:a 1 1]] [[:b 2 2]] [[:c 3 3]]] :e 2})
+  (in+sources-tree '{:e 1 :2 2 :3 3 [[[?k ?v ?c]] ...] [[[:a 1 1]] [[:b 2 2]] [[:c 3 3]]]})
+  (in+sources-tree '{[?word ?val ?val2] ["hello" "vallllll" "val2"]})
 
 
 
@@ -751,8 +871,9 @@
   (in+source-tree (first '{[[?monster ?heads]] [["Medusa" 1] ["Cyclops" 1] ["Chimera" 1]]}))
 
 
-
-
+  (wheres-tree '[[_ :view/current ?view] (current ?view) [(pred ?a ?b)]]
+               {:__rules '{current [[(current ?view) [_ :view/current ?view]]
+                                    [(current ?view) [_ :view/other-branch ?view]]]}})
 
   )
 
