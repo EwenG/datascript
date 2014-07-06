@@ -784,6 +784,129 @@
 
 
 
+
+
+
+
+
+
+
+;Query analysis
+
+(defn- some? [x] (not (nil? x)))
+
+
+
+(defn pattern->index-keys
+  [[e a v tx added :as pattern]]
+  (case-tree [e a (some? v) tx]
+             [[:eavt e a v]   ;; e a v tx
+              [:eavt e a v]   ;; e a v _
+              [:eavt e a]     ;; e a _ tx
+              [:eavt e a]     ;; e a _ _
+              [:eavt e]       ;; e _ v tx
+              [:eavt e]       ;; e _ v _
+              [:eavt e]       ;; e _ _ tx
+              [:eavt e]       ;; e _ _ _
+              [:avet a v]     ;; _ a v tx
+              [:avet a v]     ;; _ a v _
+              [:avet a]       ;; _ a _ tx
+              [:avet a]       ;; _ a _ _
+              []              ;; _ _ v tx
+              []              ;; _ _ v _
+              []              ;; _ _ _ tx
+              []]))           ;; _ _ _ _
+
+
+(defn- index-keys
+  [source where scope]
+  (let [keys (vec (cons source (filter (complement nil?) (pattern->index-keys (bind-symbols where scope)))))]
+    (if (not-empty keys)
+      (set [keys])
+      #{})))
+
+;; Computes a map from datasources satisfying ISearch to the set of
+
+;; index key sequences for that source implied by the query
+
+(defn- -q->index-keys [in+sources wheres scope]
+  (cond
+    (not-empty in+sources) ;; parsing ins
+    (let [[in source] (first in+sources)]
+      (condp looks-like? in
+        '[_ ...] ;; collection binding [?x ...]
+        (mapcat #(-q->index-keys (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+        '[[*]]   ;; relation binding [[?a ?b]]
+        (mapcat #(-q->index-keys (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+        '[*]     ;; tuple binding [?a ?b]
+        (recur (concat
+                 (zipmap in source)
+                 (next in+sources))
+               wheres
+               scope)
+        '%       ;; rules
+        (recur (next in+sources)
+               wheres
+               (assoc scope :__rules (group-by ffirst source)))
+        '_       ;; regular binding ?x
+        (recur (next in+sources)
+               wheres
+               (assoc scope in source))))
+    (not-empty wheres) ;; parsing wheres
+    (let [where (first wheres)]
+      ;; rule (rule ?a ?b ?c)
+      (if-let [rule-branches (get (:__rules scope) (first where))]
+        (let [[rule & call-args] where
+              next-scope (-> scope
+                             (update-in [:__rules_ctx rule] conj call-args)
+                             (update-in [:__rules_ctx :__depth] inc))
+              next-wheres (next wheres)]
+          (mapcat #(-q->index-keys nil
+                                   (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
+                                   next-scope) rule-branches)
+          )
+        (condp looks-like? where
+          '[[*]] ;; predicate [(pred ?a ?b ?c)]
+          (if (= '-differ? (ffirst where))
+            (when (call (first where) scope)
+              (recur nil (next wheres) scope))
+            (recur nil (next wheres) scope))
+          '[[*] _] ;; function [(fn ?a ?b) ?res]
+          (if (= '-differ? (ffirst where))
+            (when (call (first where) scope)
+              (recur nil (next wheres) scope))
+            (recur nil (next wheres) scope))
+          '[*] ;; pattern
+          (let [[source where] (parse-where where)
+                found          (index-keys source where scope)
+                next-found (-q->index-keys nil (next wheres) scope)]
+            (set/union (-q->index-keys nil (next wheres) scope) found))
+          )))
+    :else ;; reached bottom
+    #{}))
+
+
+(defn analyze-q [query & sources]
+  (let [query        (cond-> query
+                             (sequential? query) parse-query)
+        ins->sources (zipmap (:in query '[$]) sources)
+        find         (concat
+                       (map #(if (sequential? %) (last %) %) (:find query))
+                       (:with query))]
+    (set (map #(assoc % 0 (ins->sources (first %)))
+              (filter #(> (count %) 1) (-q->index-keys ins->sources (:where query) {:__find find}))))))
+
+(defn- datom->index-keys
+  [{:keys [e a v t added]}]
+  #{[:eavt e]
+    [:eavt e a]
+    [:eavt e a v]
+    [:avet a]
+    [:avet a v]})
+
+
+
+
 (comment
 
   (defn load-app []
@@ -874,6 +997,29 @@
   (wheres-tree '[[_ :view/current ?view] (current ?view) [(pred ?a ?b)]]
                {:__rules '{current [[(current ?view) [_ :view/current ?view]]
                                     [(current ?view) [_ :view/other-branch ?view]]]}})
+
+
+  (pattern->index-keys [_ :view/current _ 33 true])
+  (index-keys '$ '[_ :view/current ?view] {'$ @app})
+  (datom->index-keys {:e 5 :a :channel/mult :v :my-other-mult :tx 536870913 :added true})
+
+  (analyze-q '[:find ?e ?e2 ?n
+               :where [?e :name "Ivan"]
+               [(-differ? :x :x)]
+               [?e :age ?a]
+               [?e2 :age ?a]
+               [?e2 :name ?n]] (empty-db))
+
+  (analyze-q '[:find  ?e2
+        :in    $ ?e1 %
+        :where (follow ?e1 ?e2)]
+             (empty-db)
+      1
+      '[[(follow ?e1 ?e2)
+         [?e1 :follow ?e2]]
+        [(follow ?e1 ?e2)
+         [?e1 :follow ?t]
+         (follow ?t ?e2)]])
 
   )
 
