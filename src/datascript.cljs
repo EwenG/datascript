@@ -387,6 +387,52 @@
     ))
 
 
+
+
+
+
+;Query analysis
+
+(defn- some? [x] (not (nil? x)))
+
+(defn pattern->index-keys
+  [[e a v tx added :as pattern]]
+  (case-tree [e a (some? v) tx]
+             [[:eavt e a v]   ;; e a v tx
+              [:eavt e a v]   ;; e a v _
+              [:eavt e a]     ;; e a _ tx
+              [:eavt e a]     ;; e a _ _
+              [:eavt e]       ;; e _ v tx
+              [:eavt e]       ;; e _ v _
+              [:eavt e]       ;; e _ _ tx
+              [:eavt e]       ;; e _ _ _
+              [:avet a v]     ;; _ a v tx
+              [:avet a v]     ;; _ a v _
+              [:avet a]       ;; _ a _ tx
+              [:avet a]       ;; _ a _ _
+              []              ;; _ _ v tx
+              []              ;; _ _ v _
+              []              ;; _ _ _ tx
+              []]))           ;; _ _ _ _
+
+
+(defn- index-keys
+  [source where scope]
+  (let [keys (vec (cons source (filter (complement nil?) (pattern->index-keys (bind-symbols where scope)))))]
+    (if (not-empty keys)
+      (set [keys])
+      #{})))
+
+
+
+
+
+
+
+
+
+
+
 (defn in+source-tree-helper [in+sources]
   (let [[in source] (first in+sources)]
     (condp looks-like? in
@@ -455,72 +501,79 @@
                           (wheres-tree (next wheres) rules)))]))))
 
 
+(let [result (atom #{})
+      q-index-keys (atom #{})]
+
+  #_(defn tree-collect [tree]
+    (reduce #(if-let [collect (-> %2 first :collect)]
+              (conj %1 collect)
+              %1)
+            #{}
+            (tree-seq next rest tree)))
+
+  (defn process-where-node [{:keys [where]} scope]
+    (condp looks-like? where
+      '[[*]]                                                ;; predicate [(pred ?a ?b ?c)]
+      (if (call (first where) scope)
+        [scope] [])
+      '[[*] _]                                              ;; function [(fn ?a ?b) ?res]
+      (let [res (call (first where) scope)
+            bindings-branches (in+source-tree [(second where) res])]
+        (vec (for [binding-branch bindings-branches]
+               (reduce (fn [scope binding]
+                         (assoc scope (first binding) (second binding)))
+                       scope
+                       binding-branch))))
+      '[*]                                                  ;; pattern
+      (let [[source where] (parse-where where)
+            found (search-datoms source where scope)]
+        (mapv #(-> (populate-scope scope where %)
+                   (assoc :datom %))
+              found))))
+
+  (defn q-tree-wheres [wheres scope]
+    (let [new-nodes (process-where-node (first wheres) scope)]
+      (if (nil? (next wheres))
+        #_(mapv (fn [new-node]
+                [(assoc new-node :collect (mapv new-node (:__find new-node)))])
+              new-nodes)
+        (do (let [[source where] (parse-where (:where (first wheres)))]
+              (swap! q-index-keys set/union (index-keys source where scope)))
+          (doseq [new-node new-nodes]
+              (swap! result conj (mapv new-node (:__find new-node))))
+            (mapv (fn [new-node] [new-node]) new-nodes))
+        (mapv (fn [new-node]
+                (into [new-node] (-> (mapcat #(q-tree-wheres % new-node) (lazy-seq (next wheres)))
+                                     vec)))
+              new-nodes))))
 
 
-(defn tree-collect [tree]
-  (reduce #(if-let [collect (-> %2 first :collect)]
-            (conj %1 collect)
-            %1)
-          #{}
-          (tree-seq next rest tree)))
+  (defn process-source-node [{:keys [source] :as node} scope]
+    (assoc scope source (get node source)))
 
-(defn process-where-node [{:keys [where]} scope]
-  (condp looks-like? where
-    '[[*]]                                                  ;; predicate [(pred ?a ?b ?c)]
-    (if (call (first where) scope)
-      [scope] [])
-    '[[*] _]                                                ;; function [(fn ?a ?b) ?res]
-    (let [res (call (first where) scope)
-          bindings-branches (in+source-tree [(second where) res])]
-      (vec (for [binding-branch bindings-branches]
-             (reduce (fn [scope binding]
-                       (assoc scope (first binding) (second binding)))
-                     scope
-                     binding-branch))))
-    '[*]                                                    ;; pattern
-    (let [[source where] (parse-where where)
-          found (search-datoms source where scope)]
-      (mapv #(-> (populate-scope scope where %)
-                 (assoc :datom %))
-            found))))
-
-(defn q-tree-wheres [wheres scope]
-  (let [new-nodes (process-where-node (first wheres) scope)]
-    (if (nil? (next wheres))
-      (mapv (fn [new-node]
-              [(assoc new-node :collect (mapv new-node (:__find new-node)))])
-            new-nodes)
-      (mapv (fn [new-node]
-              (into [new-node] (-> (mapcat #(q-tree-wheres % new-node) (lazy-seq (next wheres)))
-                                   vec)))
-            new-nodes))))
-
-
-(defn process-source-node [{:keys [source] :as node} scope]
-  (assoc scope source (get node source)))
-
-(defn q-tree-in+sources [in+sources wheres scope]
-  (let [new-node (process-source-node (first in+sources) scope)]
-    (if (empty? (next in+sources))
-      #_(do (println (-> (second wheres) first) "\n") nil)
-      #_(if (nil? wheres)
-        [[(assoc new-node :collect (mapv new-node (:__find new-node)))]]
+  (defn q-tree-in+sources [in+sources wheres scope]
+    (let [new-node (process-source-node (first in+sources) scope)]
+      (if (empty? (next in+sources))
+        (if (nil? wheres)
+          ;Theres no wheres. But that doesn't mean there is no potential result!
+          (do (swap! result conj (mapv new-node (:__find new-node)))
+            [new-node])
+          #_[[(assoc new-node :collect (mapv new-node (:__find new-node)))]]
+          [(into [new-node]
+                 (-> (mapcat #(q-tree-wheres % new-node) wheres)
+                     vec))])
         [(into [new-node]
-               (mapcat #(q-tree-wheres % new-node) wheres))])
-      (if (nil? wheres)
-        [[(assoc new-node :collect (mapv new-node (:__find new-node)))]]
-        [(into [new-node]
-               (-> (mapcat #(q-tree-wheres % new-node) wheres)
-                   vec))])
-      [(into [new-node]
-             (-> (mapcat #(q-tree-in+sources % wheres new-node) (next in+sources))
-                 vec))])))
+               (-> (mapcat #(q-tree-in+sources % wheres new-node) (next in+sources))
+                   vec))])))
 
-(defn q-tree [tree in+sources wheres]
-  (let [tree (into tree (-> (mapcat #(q-tree-in+sources % wheres (first tree)) in+sources)
-                            vec))]
-    #_(println tree "\n")
-    (tree-collect tree)))
+  (defn q-tree [tree in+sources wheres]
+    (reset! result #{})
+    (reset! q-index-keys #{})
+    (let [tree (into tree (-> (mapcat #(q-tree-in+sources % wheres (first tree)) in+sources)
+                              vec))]
+      #_(println tree "\n")
+      #_(tree-collect tree)
+      [tree @result @q-index-keys])))
 
 
 #_(defn maybe-conj [x y]
@@ -669,6 +722,12 @@
       (not-empty (filter sequential? (:find query)))
         (aggregate query ins->sources))))
 
+
+
+#_(defrecord ContinuousQuery [tree results q-index-keys]
+  IDeref
+  (-deref [_] results))
+
 (defn parse-rules [source]
   (let [rules (if (string? source) (read-string source) source)]
     {:__rules (group-by ffirst rules)}))
@@ -683,7 +742,8 @@
                        (:with query))
         in+sources (in+sources-tree ins->sources)
         wheres (wheres-tree (:where query) rules)
-        results (q-tree [{:__find find}] in+sources wheres)
+        [tree results q-index-keys] (q-tree [{:__find find}] in+sources wheres)
+        _ (println [tree results q-index-keys] "\n")
         #_results      #_(q-helper ins->sources (:where query) [{:__find find}] {:__find find})]
     (cond->> results
              (:with query)
@@ -780,6 +840,8 @@
          (apply btset-by cmp-datoms-avet datoms)
          (reduce max 0 (map :e datoms))
          (reduce max tx0 (map :tx datoms)))))
+
+
 
 
 
@@ -942,6 +1004,9 @@
 
   (q2 '[:find ?k ?v :in [[?k ?v] ...] :where [(> ?v 1)]] {:a 1, :b 2, :c 3})
 
+  (q2 '[:find ?k ?v :in [[?k ?v] ...]] {:a 1, :b 2, :c 3})
+  (q2 '[:find ?k ?v ] @app)
+
 
 
 
@@ -1000,8 +1065,8 @@
 
 
   (pattern->index-keys [_ :view/current _ 33 true])
-  (index-keys '$ '[_ :view/current ?view] {'$ @app})
-  (datom->index-keys {:e 5 :a :channel/mult :v :my-other-mult :tx 536870913 :added true})
+  (index-keys '$ '[_ :view/current _] {'$ @app})
+  (datom->index-keys {:e 5 :a :channel/mult :v :my-other-mult :t 536870913 :added true})
 
   (analyze-q '[:find ?e ?e2 ?n
                :where [?e :name "Ivan"]
