@@ -493,21 +493,19 @@
 
 ;; Performance
 
-(comment
+(defn now [] (.getTime (js/Date.)))
+(defn measure [f]
+  (let [t0 (now)
+        res (f)]
+    (- (now) t0)))
 
-  (defn now [] (.getTime (js/Date.)))
-  (defn measure [f]
-    (let [t0 (now)
-          res (f)]
-      (- (now) t0)))
-
-  (defn random-man []
-    (let [id (rand-int 1000000)]
-      {:db/id     id
-       :name      (rand-nth ["Ivan" "Petr" "Sergei" "Oleg" "Yuri" "Dmitry" "Fedor" "Denis"])
-       :last-name (rand-nth ["Ivanov" "Petrov" "Sidorov" "Kovalev" "Kuznetsov" "Voronoi"])
-       :sex       (rand-nth [:male :female])
-       :age       (rand-int 90)})))
+(defn random-man []
+  (let [id (rand-int 1000000)]
+    {:db/id id
+     :name      (rand-nth ["Ivan" "Petr" "Sergei" "Oleg" "Yuri" "Dmitry" "Fedor" "Denis"])
+     :last-name (rand-nth ["Ivanov" "Petrov" "Sidorov" "Kovalev" "Kuznetsov" "Voronoi"])
+     :sex       (rand-nth [:male :female])
+     :age       (rand-int 90)}))
 
 ;; (measure
 ;;   #(def big-db (reduce d/with
