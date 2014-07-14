@@ -1,4 +1,4 @@
-(def version "0.1.6")
+(def version "0.1.6-analyze-q")
 
 (defproject datascript version
   :description "An implementation of Datomic in-memory database and Datalog query engine in ClojureScript"
