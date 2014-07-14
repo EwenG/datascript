@@ -1,15 +1,15 @@
 (ns datascript
   (:require
-   [clojure.set :as set]
-   [clojure.walk :as walk]
-   [cljs.reader :refer [read-string]]
-   [datascript.btset :refer [btset-by slice]])
+    [clojure.set :as set]
+    [clojure.walk :as walk]
+    [cljs.reader :refer [read-string]]
+    [datascript.btset :refer [btset-by slice]])
   (:require-macros [datascript :refer [combine-cmp case-tree]]))
 
 (defrecord Datom [e a v tx added]
   Object
   (toString [this]
-            (pr-str this)))
+    (pr-str this)))
 
 (extend-type Datom
   IHash
@@ -74,24 +74,24 @@
 
 (defn- cmp-datoms-eavt [d1 d2]
   (combine-cmp
-   (cmp     (.-e d1) (.-e d2))
-   (cmp     (.-a d1) (.-a d2))
-   (cmp-val (.-v d1) (.-v d2))
-   (cmp     (.-tx d1) (.-tx d2))))
+    (cmp     (.-e d1) (.-e d2))
+    (cmp     (.-a d1) (.-a d2))
+    (cmp-val (.-v d1) (.-v d2))
+    (cmp     (.-tx d1) (.-tx d2))))
 
 (defn- cmp-datoms-aevt [d1 d2]
   (combine-cmp
-   (cmp     (.-a d1) (.-a d2))
-   (cmp     (.-e d1) (.-e d2))
-   (cmp-val (.-v d1) (.-v d2))
-   (cmp     (.-tx d1) (.-tx d2))))
+    (cmp     (.-a d1) (.-a d2))
+    (cmp     (.-e d1) (.-e d2))
+    (cmp-val (.-v d1) (.-v d2))
+    (cmp     (.-tx d1) (.-tx d2))))
 
 (defn- cmp-datoms-avet [d1 d2]
   (combine-cmp
-   (cmp     (.-a d1) (.-a d2))
-   (cmp-val (.-v d1) (.-v d2))
-   (cmp     (.-e d1) (.-e d2))
-   (cmp     (.-tx d1) (.-tx d2))))
+    (cmp     (.-a d1) (.-a d2))
+    (cmp-val (.-v d1) (.-v d2))
+    (cmp     (.-e d1) (.-e d2))
+    (cmp     (.-tx d1) (.-tx d2))))
 
 (defrecord DB [schema eavt aevt avet max-eid max-tx]
   Object
@@ -99,7 +99,6 @@
     (pr-str* this))
     
   ISearch
-<<<<<<< HEAD
   (-search [_ [e a v tx]]
     (case-tree [e a (some? v) tx] [
       (slice eavt (Datom. e a v tx nil))                 ;; e a v tx
@@ -125,33 +124,6 @@
       (filter #(= tx (.-tx %)) eavt)                     ;; _ _ _ tx
       eavt])))                                           ;; _ _ _ _
   
-=======
-  (-search [db [e a v tx]]
-           (case-tree [e a (some? v) tx]
-                      [(slice eavt (Datom. e a v tx nil))                 ;; e a v tx
-                       (slice eavt (Datom. e a v nil nil))                ;; e a v _
-                       (->> (slice eavt (Datom. e a nil nil nil))         ;; e a _ tx
-                            (filter #(= tx (.-tx %))))
-                       (slice eavt (Datom. e a nil nil nil))              ;; e a _ _
-                       (->> (slice eavt (Datom. e nil nil nil nil))       ;; e _ v tx
-                            (filter #(and (= v (.-v %)) (= tx (.-tx %)))))
-                       (->> (slice eavt (Datom. e nil nil nil nil))       ;; e _ v _
-                            (filter #(= v (.-v %))))
-                       (->> (slice eavt (Datom. e nil nil nil nil))       ;; e _ _ tx
-                            (filter #(= tx (.-tx %))))
-                       (slice eavt (Datom. e nil nil nil nil))            ;; e _ _ _
-                       (->> (slice avet (Datom. nil a v nil nil))         ;; _ a v tx
-                            (filter #(= tx (.-tx %))))
-                       (slice avet (Datom. nil a v nil nil))              ;; _ a v _
-                       (->> (slice avet (Datom. nil a nil nil nil))       ;; _ a _ tx
-                            (filter #(= tx (.-tx %))))
-                       (slice avet (Datom. nil a nil nil nil))            ;; _ a _ _
-                       (filter #(and (= v (.-v %)) (= tx (.-tx %))) eavt) ;; _ _ v tx
-                       (filter #(= v (.-v %)) eavt)                       ;; _ _ v _
-                       (filter #(= tx (.-tx %)) eavt)                     ;; _ _ _ tx
-                       eavt])))                                           ;; _ _ _ _
-
->>>>>>> remotes/allgress/master
 (defrecord TxReport [db-before db-after tx-data tempids])
 
 (defn multival? [db attr]
@@ -162,15 +134,16 @@
 
 (defn- match-tuple [tuple pattern]
   (every? true?
-          (map #(or (nil? %2) (= %1 %2)) tuple pattern)))
+    (map #(or (nil? %2) (= %1 %2)) tuple pattern)))
 
 (defn- search [data pattern]
   (cond
-   (satisfies? ISearch data)
-   (-search data pattern)
-   (or (satisfies? ISeqable data)
-       (array? data))
-   (filter #(match-tuple % pattern) data)))
+    (satisfies? ISearch data)
+      (-search data pattern)
+    (or (satisfies? ISeqable data)
+        (array? data))
+      (filter #(match-tuple % pattern) data)))
+
 
 ;;;;;;;;;; Transacting
 
@@ -286,6 +259,7 @@
             (= op :db.fn/retractEntity)
               (let [datoms (-search db [e])]
                 (recur (reduce transact-retract-datom report datoms) entities)))))))
+
 ;; QUERIES
 
 (defn- parse-where [where]
@@ -297,9 +271,9 @@
 
 (defn- bind-symbol [sym scope]
   (cond
-   (= '_ sym)    nil
-   (symbol? sym) (get scope sym nil)
-   :else         sym))
+    (= '_ sym)    nil
+    (symbol? sym) (get scope sym nil)
+    :else         sym))
 
 (defn- bind-symbols [form scope]
   (map #(bind-symbol % scope) form))
@@ -317,13 +291,13 @@
 
 (defn- populate-scope [scope where datom]
   (->>
-   (map #(when (and (symbol? %1)
-                    (not (contains? scope %1)))
-           [%1 %2])
-        where
-        datom)
-   (remove nil?)
-   (into scope)))
+    (map #(when (and (symbol? %1)
+                     (not (contains? scope %1)))
+            [%1 %2])
+      where
+      datom)
+    (remove nil?)
+    (into scope)))
 
 (defn- -differ? [& xs]
   (let [l (count xs)]
@@ -340,19 +314,19 @@
 
 (defn- looks-like? [pattern form]
   (cond
-   (= '_ pattern)
-   true
-   (= '[*] pattern)
-   (sequential? form)
-   (sequential? pattern)
-   (and (sequential? form)
-        (= (count form) (count pattern))
-        (every? (fn [[pattern-el form-el]] (looks-like? pattern-el form-el))
-                (map vector pattern form)))
-   (symbol? pattern)
-   (= form pattern)
-   :else ;; (predicate? pattern)
-   (pattern form)))
+    (= '_ pattern)
+      true
+    (= '[*] pattern)
+      (sequential? form)
+    (sequential? pattern)
+      (and (sequential? form)
+           (= (count form) (count pattern))
+           (every? (fn [[pattern-el form-el]] (looks-like? pattern-el form-el))
+                   (map vector pattern form)))
+    (symbol? pattern)
+      (= form pattern)
+    :else ;; (predicate? pattern)
+      (pattern form)))
 
 (defn- collect [f coll]
   (persistent! (reduce #(reduce conj! %1 (f %2)) (transient #{}) coll)))
@@ -367,76 +341,76 @@
                                        (or (replacements %)
                                            (symbol (str (name %) "__auto__" seqid)))
                                        %)
-                                    body)]
+                                     body)]
     ;; recursion breaker
     ;; adding condition that call args cannot take same values as they took in any previous call to this rule
     (concat
-     (for [prev-call-args (get context rule)]
-       [(concat ['-differ?] call-args prev-call-args)])
-     bound-body)))
+      (for [prev-call-args (get context rule)]
+        [(concat ['-differ?] call-args prev-call-args)])
+      bound-body)))
 
 (defn- -q [in+sources wheres scope]
   (cond
-   (not-empty in+sources) ;; parsing ins
-   (let [[in source] (first in+sources)]
-     (condp looks-like? in
-       '[_ ...] ;; collection binding [?x ...]
-       (collect #(-q (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+    (not-empty in+sources) ;; parsing ins
+      (let [[in source] (first in+sources)]
+        (condp looks-like? in
+          '[_ ...] ;; collection binding [?x ...]
+            (collect #(-q (concat [[(first in) %]] (next in+sources)) wheres scope) source)
 
-       '[[*]]   ;; relation binding [[?a ?b]]
-       (collect #(-q (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+          '[[*]]   ;; relation binding [[?a ?b]]
+            (collect #(-q (concat [[(first in) %]] (next in+sources)) wheres scope) source)
 
-       '[*]     ;; tuple binding [?a ?b]
-       (recur (concat
-               (zipmap in source)
-               (next in+sources))
-              wheres
-              scope)
-       '%       ;; rules
-       (let [rules (if (string? source) (read-string source) source)]
-         (recur (next in+sources)
-                wheres
-                (assoc scope :__rules (group-by ffirst rules))))
+          '[*]     ;; tuple binding [?a ?b]
+            (recur (concat
+                     (zipmap in source)
+                     (next in+sources))
+                   wheres
+                   scope)
+          '%       ;; rules
+            (let [rules (if (string? source) (read-string source) source)]
+              (recur (next in+sources)
+                     wheres
+                     (assoc scope :__rules (group-by ffirst rules))))
 
-       '_       ;; regular binding ?x
-       (recur (next in+sources)
-              wheres
-              (assoc scope in source))))
+          '_       ;; regular binding ?x
+            (recur (next in+sources)
+                   wheres
+                   (assoc scope in source))))
 
-   (not-empty wheres) ;; parsing wheres
-   (let [where (first wheres)]
+    (not-empty wheres) ;; parsing wheres
+      (let [where (first wheres)]
 
-     ;; rule (rule ?a ?b ?c)
-     (if-let [rule-branches (get (:__rules scope) (first where))]
-       (let [[rule & call-args] where
-             next-scope (-> scope
-                            (update-in [:__rules_ctx rule] conj call-args)
-                            (update-in [:__rules_ctx :__depth] inc))
-             next-wheres (next wheres)]
-         (collect
-          #(-q nil
-               (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
-               next-scope)
-          rule-branches))
+        ;; rule (rule ?a ?b ?c)
+        (if-let [rule-branches (get (:__rules scope) (first where))]
+          (let [[rule & call-args] where
+                next-scope (-> scope
+                             (update-in [:__rules_ctx rule] conj call-args)
+                             (update-in [:__rules_ctx :__depth] inc))
+                next-wheres (next wheres)]
+            (collect
+              #(-q nil
+                   (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
+                   next-scope)
+              rule-branches))
 
-       (condp looks-like? where
-         '[[*]] ;; predicate [(pred ?a ?b ?c)]
-         (when (call (first where) scope)
-           (recur nil (next wheres) scope))
+          (condp looks-like? where
+            '[[*]] ;; predicate [(pred ?a ?b ?c)]
+              (when (call (first where) scope)
+                (recur nil (next wheres) scope))
 
-         '[[*] _] ;; function [(fn ?a ?b) ?res]
-         (let [res (call (first where) scope)]
-           (recur [[(second where) res]] (next wheres) scope))
+            '[[*] _] ;; function [(fn ?a ?b) ?res]
+              (let [res (call (first where) scope)]
+                (recur [[(second where) res]] (next wheres) scope))
 
-         '[*] ;; pattern
-         (let [[source where] (parse-where where)
-               found          (search-datoms source where scope)]
-           (collect #(-q nil (next wheres) (populate-scope scope where %)) found))
-         )))
+            '[*] ;; pattern
+              (let [[source where] (parse-where where)
+                    found          (search-datoms source where scope)]
+                (collect #(-q nil (next wheres) (populate-scope scope where %)) found))
+            )))
 
    :else ;; reached bottom
-   #{(mapv scope (:__find scope))}
-   ))
+      #{(mapv scope (:__find scope))}
+    ))
 
 ;; Computes a map from datasources satisfying ISearch to the set of
 ;; index key sequences for that source implied by the query
@@ -509,34 +483,34 @@
 ;; AGGREGATES
 
 (def ^:private built-in-aggregates {
-                                    'distinct (comp vec distinct)
-                                    'min    (fn
-                                              ([coll] (reduce min coll))
-                                              ([n coll]
-                                               (vec
-                                                (reduce (fn [acc x]
-                                                          (cond
-                                                           (< (count acc) n) (sort (conj acc x))
-                                                           (< x (last acc))  (sort (conj (butlast acc) x))
-                                                           :else             acc))
-                                                        [] coll))))
-                                    'max    (fn
-                                              ([coll] (reduce max coll))
-                                              ([n coll]
-                                               (vec
-                                                (reduce (fn [acc x]
-                                                          (cond
-                                                           (< (count acc) n) (sort (conj acc x))
-                                                           (> x (first acc)) (sort (conj (next acc) x))
-                                                           :else             acc))
-                                                        [] coll))))
-                                    'sum    #(reduce + 0 %)
-                                    'rand   (fn
-                                              ([coll] (rand-nth coll))
-                                              ([n coll] (vec (repeatedly n #(rand-nth coll)))))
-                                    'sample (fn [n coll]
-                                              (vec (take n (shuffle coll))))
-                                    'count  count})
+  'distinct (comp vec distinct)
+  'min    (fn
+            ([coll] (reduce min coll))
+            ([n coll]
+              (vec
+                (reduce (fn [acc x]
+                          (cond
+                            (< (count acc) n) (sort (conj acc x))
+                            (< x (last acc))  (sort (conj (butlast acc) x))
+                            :else             acc))
+                        [] coll))))
+  'max    (fn
+            ([coll] (reduce max coll))
+            ([n coll]
+              (vec
+                (reduce (fn [acc x]
+                          (cond
+                            (< (count acc) n) (sort (conj acc x))
+                            (> x (first acc)) (sort (conj (next acc) x))
+                            :else             acc))
+                        [] coll))))
+  'sum    #(reduce + 0 %)
+  'rand   (fn
+            ([coll] (rand-nth coll))
+            ([n coll] (vec (repeatedly n #(rand-nth coll)))))
+  'sample (fn [n coll]
+            (vec (take n (shuffle coll))))
+  'count  count})
 
 (defn- aggr-group-key [find result]
   (mapv (fn [val sym]
@@ -599,15 +573,14 @@
   (let [query        (if (sequential? query) (parse-query query) query)
         ins->sources (zipmap (:in query '[$]) sources)
         find         (concat
-                      (map #(if (sequential? %) (last %) %) (:find query))
-                      (:with query))
+                       (map #(if (sequential? %) (last %) %) (:find query))
+                       (:with query))
         results      (-q ins->sources (:where query) {:__find find})]
     (cond->> results
-             (:with query)
-             (mapv #(subvec % 0 (count (:find query))))
-             (not-empty (filter sequential? (:find query)))
-             (aggregate query ins->sources)
-             )))
+      (:with query)
+        (mapv #(subvec % 0 (count (:find query))))
+      (not-empty (filter sequential? (:find query)))
+        (aggregate query ins->sources))))
 
 (defn entity [db eid]
   (when-let [datoms (not-empty (-search db [eid]))]
@@ -672,7 +645,7 @@
 (defn listen!
   ([conn callback] (listen! conn (rand) callback))
   ([conn key callback]
-   (swap! (:listeners (meta conn)) assoc key callback)
+     (swap! (:listeners (meta conn)) assoc key callback)
    key)
   ([conn callback q sources]
    (listen! conn (rand) callback q sources))
@@ -697,7 +670,6 @@
 (defn seek-datoms [db index & cs]
   (slice (get db index) (components->pattern index cs) (Datom. nil nil nil nil nil)))
 
-<<<<<<< HEAD
 ;; printing and reading
 ;; #datomic/DB {:schema <map>, :datoms <vector of [e a v tx]>}
 
@@ -730,5 +702,3 @@
          (apply btset-by cmp-datoms-avet datoms)
          (reduce max 0 (map :e datoms))
          (reduce max tx0 (map :tx datoms)))))
-=======
->>>>>>> remotes/allgress/master
