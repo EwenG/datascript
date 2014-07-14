@@ -2,7 +2,9 @@
   (:require
     [clojure.set :as set]
     [clojure.walk :as walk]
-    [cljs.reader :refer [read-string]]))
+    [cljs.reader :refer [read-string]]
+    [datascript.btset :refer [btset-by slice]])
+  (:require-macros [datascript :refer [combine-cmp case-tree]]))
 
 (defrecord Datom [e a v tx added]
   Object
@@ -18,32 +20,96 @@
   ISeqable
   (-seq [d] (list (.-e d) (.-a d) (.-v d) (.-tx d) (.-added d))))
 
+
+;;;;;;;;;; Searching
+
 (defprotocol ISearch
   (-search [data pattern]))
 
-(defrecord DB [schema ea av max-eid max-tx]
-  ISearch
-  (-search [db [e a v tx added :as pattern]]
-    (cond->>
-      (case [(when e :+) (when a :+) (when v :+)]
-        [:+  nil nil]
-          (->> (get-in db [:ea e]) vals (apply concat))
-        [nil :+  nil]
-          (->> (get-in db [:av a]) vals (apply concat))
-        [:+  :+  nil]
-          (get-in db [:ea e a])
-        [nil :+  :+]
-          (get-in db [:av a v])
-        [:+  :+  :+]
-          (->> (get-in db [:ea e a])
-               (filter #(= v (.-v %)))))
-     tx    (filter #(= tx (.-tx %)))
-     added (filter #(= added (.-added %))))))
+(defn- compare-key [k o1 o2]
+  (let [k1 (get o1 k)
+        k2 (get o2 k)]
+    (if (and (some? k1) (some? k2))
+      (let [t1 (type k1)
+            t2 (type k2)]
+        (if (= t1 t2)
+          (compare k1 k2)
+          (compare t1 t2)))
+      0)))
 
+(defn- cmp-val [o1 o2]
+  (if (and (some? o1) (some? o2))
+    (let [t1 (type o1)
+          t2 (type o2)]
+      (if (= t1 t2)
+        (compare o1 o2)
+        (compare t1 t2)))
+    0))
+
+(defn- cmp [o1 o2]
+  (if (and o1 o2)
+    (compare o1 o2)
+    0))
+
+(defn- cmp-datoms-eavt [d1 d2]
+  (combine-cmp
+    (cmp     (.-e d1) (.-e d2))
+    (cmp     (.-a d1) (.-a d2))
+    (cmp-val (.-v d1) (.-v d2))
+    (cmp     (.-tx d1) (.-tx d2))))
+
+(defn- cmp-datoms-aevt [d1 d2]
+  (combine-cmp
+    (cmp     (.-a d1) (.-a d2))
+    (cmp     (.-e d1) (.-e d2))
+    (cmp-val (.-v d1) (.-v d2))
+    (cmp     (.-tx d1) (.-tx d2))))
+
+(defn- cmp-datoms-avet [d1 d2]
+  (combine-cmp
+    (cmp     (.-a d1) (.-a d2))
+    (cmp-val (.-v d1) (.-v d2))
+    (cmp     (.-e d1) (.-e d2))
+    (cmp     (.-tx d1) (.-tx d2))))
+
+(defrecord DB [schema eavt aevt avet max-eid max-tx]
+  Object
+  (toString [this]
+    (pr-str* this))
+    
+  ISearch
+  (-search [_ [e a v tx]]
+    (case-tree [e a (some? v) tx] [
+      (slice eavt (Datom. e a v tx nil))                 ;; e a v tx
+      (slice eavt (Datom. e a v nil nil))                ;; e a v _
+      (->> (slice eavt (Datom. e a nil nil nil))         ;; e a _ tx
+           (filter #(= tx (.-tx %))))
+      (slice eavt (Datom. e a nil nil nil))              ;; e a _ _
+      (->> (slice eavt (Datom. e nil nil nil nil))       ;; e _ v tx
+           (filter #(and (= v (.-v %)) (= tx (.-tx %)))))
+      (->> (slice eavt (Datom. e nil nil nil nil))       ;; e _ v _
+           (filter #(= v (.-v %))))
+      (->> (slice eavt (Datom. e nil nil nil nil))       ;; e _ _ tx
+           (filter #(= tx (.-tx %))))
+      (slice eavt (Datom. e nil nil nil nil))            ;; e _ _ _
+      (->> (slice avet (Datom. nil a v nil nil))         ;; _ a v tx
+           (filter #(= tx (.-tx %))))
+      (slice avet (Datom. nil a v nil nil))              ;; _ a v _
+      (->> (slice avet (Datom. nil a nil nil nil))       ;; _ a _ tx
+           (filter #(= tx (.-tx %))))
+      (slice avet (Datom. nil a nil nil nil))            ;; _ a _ _
+      (filter #(and (= v (.-v %)) (= tx (.-tx %))) eavt) ;; _ _ v tx
+      (filter #(= v (.-v %)) eavt)                       ;; _ _ v _
+      (filter #(= tx (.-tx %)) eavt)                     ;; _ _ _ tx
+      eavt])))                                           ;; _ _ _ _
+  
 (defrecord TxReport [db-before db-after tx-data tempids])
 
 (defn multival? [db attr]
   (= (get-in db [:schema attr :db/cardinality]) :db.cardinality/many))
+
+(defn ref? [db attr]
+  (= (get-in db [:schema attr :db/valueType]) :db.type/ref))
 
 (defn- match-tuple [tuple pattern]
   (every? true?
@@ -57,72 +123,121 @@
         (array? data))
       (filter #(match-tuple % pattern) data)))
 
-(defn- transact-datom [db datom]
+
+;;;;;;;;;; Transacting
+
+(defn- current-tx [report]
+  (inc (get-in report [:db-before :max-tx])))
+
+(defn- next-eid [db]
+  (inc (:max-eid db)))
+
+(defn- advance-max-eid [db eid]
+  (cond-> db
+    (> eid (:max-eid db))
+      (assoc :max-eid eid)))
+
+(defn- allocate-eid
+  ([report eid]
+     (update-in report [:db-after] advance-max-eid eid))
+  ([report e eid]
+     (-> report
+       (assoc-in [:tempids e] eid)
+       (update-in [:db-after] advance-max-eid eid))))
+
+(defn- with-datom [db datom]
   (if (.-added datom)
     (-> db
-      (update-in [:ea (.-e datom) (.-a datom)] (fnil conj #{}) datom)
-      (update-in [:av (.-a datom) (.-v datom)] (fnil conj #{}) datom))
-    (-> db
-      (update-in [:ea (.-e datom) (.-a datom)] disj datom)
-      (update-in [:av (.-a datom) (.-v datom)] disj datom))))
+      (update-in [:eavt] conj datom)
+      (update-in [:aevt] conj datom)
+      (update-in [:avet] conj datom)
+      (advance-max-eid (.-e datom)))
+    (let [removing (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
+      (-> db
+        (update-in [:eavt] disj removing)
+        (update-in [:aevt] disj removing)
+        (update-in [:avet] disj removing)))))
 
-(defn- -resolve-eid [eid db]
-  (- (.-max-eid db) eid))
+(defn- transact-report [report datom]
+  (-> report
+      (update-in [:db-after] with-datom datom)
+      (update-in [:tx-data] conj datom)))
 
-(defn- resolve-eid [db d]
-  (if (neg? (.-e d))
-    (update-in d [:e] -resolve-eid db)
-    d))
+(defn- explode [db entity]
+  (let [eid (:db/id entity)]
+    (for [[a vs] (dissoc entity :db/id)
+          v      (if (and (sequential? vs)
+                          (multival? db a))
+                   vs [vs])]
+      [:db/add eid a v])))
 
-(defn- entity->ops [db entity]
-  (cond
-    (map? entity)
-      (let [eid (:db/id entity)]
-        (for [[a vs] (dissoc entity :db/id)
-              v      (if (and (sequential? vs)
-                              (multival? db a))
-                       vs
-                       [vs])]
-          [:db/add eid a v]))
-    (= (first entity) :db.fn/call)
-      (let [[_ f & args] entity]
-        (mapcat #(entity->ops db %) (apply f db args)))
-    :else
-      [entity]))
+(defn- transact-add [report [_ e a v]]
+  (let [tx      (current-tx report)
+        db      (:db-after report)
+        datom   (Datom. e a v tx true)]
+    (if (multival? db a)
+      (if (empty? (-search db [e a v]))
+        (transact-report report datom)
+        report)
+      (if-let [old-datom (first (-search db [e a]))]
+        (if (= (.-v old-datom) v)
+          report
+          (-> report
+            (transact-report (Datom. e a (.-v old-datom) tx false))
+            (transact-report datom)))
+        (transact-report report datom)))))
 
-(defn- op->tx-data [db [op e a v]]
-  (let [tx (inc (.-max-tx db))]
-    (case op
-      :db/add
-        (if (= :db.cardinality/many (get-in db [:schema a :db/cardinality]))
-          (when (empty? (-search db [e a v]))
-            [(->Datom e a v tx true)])
-          (if-let [old-datom (first (-search db [e a]))]
-            (when (not= (.-v old-datom) v)
-              [(->Datom e a (.-v old-datom) tx false)
-               (->Datom e a v tx true)])
-            [(->Datom e a v tx true)]))
-      :db/retract
-        (when-let [old-datom (first (-search db [e a v]))]
-          [(->Datom e a v tx false)])
-      :db.fn/retractAttribute
-        (let [datoms (-search db [e a])]
-          (map #(assoc % :tx tx :added false) datoms))
-      :db.fn/retractEntity
-        (let [datoms (-search db [e])]
-          (map #(assoc % :tx tx :added false) datoms))
-      )))
+(defn- transact-retract-datom [report d]
+  (let [tx (current-tx report)]
+    (transact-report report (Datom. (.-e d) (.-a d) (.-v d) tx false))))
 
-(defn- entity->tx-data [db entity]
-  (->> (entity->ops db entity)
-       (mapcat #(op->tx-data db %))))
+(defn- transact-entities [report [entity & entities :as es]]
+  (let [db (:db-after report)]
+    (cond
+      (nil? entity)
+        (-> report
+            (update-in [:db-after :max-tx] inc))
+     
+      (map? entity)
+        (if (:db/id entity)
+          (recur report (concat (explode db entity) entities))
+          (let [eid    (next-eid db)
+                entity (assoc entity :db/id eid)]
+            (recur (allocate-eid report eid)
+                   (concat [entity] entities))))
+     
+      :else
+        (let [[op e a v] entity]
+          (cond
+            (= op :db.fn/call)
+              (let [[_ f & args] entity]
+                (recur report (concat (apply f db args) entities)))
 
-(defn- -with [db tx-data]
-  (->
-    (reduce transact-datom db tx-data)
-    (update-in [:max-tx] inc)
-    (assoc      :max-eid (reduce max (.-max-eid db) (map :e tx-data)))))
+            (neg? e)
+              (if-let [eid (get-in report [:tempids e])]
+                (recur report (concat [[op eid a v]] entities))
+                (recur (allocate-eid report e (next-eid db)) es))
+           
+            (and (ref? db a) (neg? v))
+              (if-let [vid (get-in report [:tempids v])]
+                (recur report (concat [[op e a vid]] entities))
+                (recur (allocate-eid report v (next-eid db)) es))
+           
+            (= op :db/add)
+              (recur (transact-add report entity) entities)
 
+            (= op :db/retract)
+              (if-let [old-datom (first (-search db [e a v]))]
+                (recur (transact-retract-datom report old-datom) entities)
+                (recur report entities))
+
+            (= op :db.fn/retractAttribute)
+              (let [datoms (-search db [e a])]
+                (recur (reduce transact-retract-datom report datoms) entities))
+
+            (= op :db.fn/retractEntity)
+              (let [datoms (-search db [e])]
+                (recur (reduce transact-retract-datom report datoms) entities)))))))
 
 ;; QUERIES
 
@@ -186,7 +301,7 @@
       (pattern form)))
 
 (defn- collect [f coll]
-  (reduce #(set/union %1 (f %2)) #{} coll))
+  (persistent! (reduce #(reduce conj! %1 (f %2)) (transient #{}) coll)))
 
 (defn- bind-rule-branch [branch call-args context]
   (let [[[rule & local-args] & body] branch
@@ -353,32 +468,31 @@
         (aggregate query ins->sources))))
 
 (defn entity [db eid]
-  (when-let [attrs (not-empty (get-in db [:ea eid]))]
-    (merge { :db/id eid }
-           (for [[attr datoms] attrs
-                 :when (not-empty datoms)]
-             (if (multival? db attr)
-               [attr (mapv :v datoms)]
-               [attr (.-v (first datoms))])))))
-
+  (when-let [datoms (not-empty (-search db [eid]))]
+    (reduce (fn [entity datom]
+              (let [a (.-a datom)
+                    v (.-v datom)]
+                (if (multival? db (.-a datom))
+                  (update-in entity [a] (fnil conj []) v)
+                  (assoc entity a v))))
+            { :db/id eid } datoms)))
 
 (def ^:const tx0 0x20000000)
 
 (defn empty-db [& [schema]]
-  (DB. schema {} {} 0 tx0))
+  (DB. schema
+       (btset-by cmp-datoms-eavt) 
+       (btset-by cmp-datoms-aevt)
+       (btset-by cmp-datoms-avet)
+       0
+       tx0))
 
 (defn create-conn [& [schema]]
   (atom (empty-db schema)
         :meta { :listeners  (atom {}) }))
 
 (defn transact [db entities]
-  (let [raw-datoms (mapcat #(entity->tx-data db %) entities)
-        datoms     (map #(resolve-eid db %) raw-datoms)
-        tempids    (->> raw-datoms
-                     (filter #(neg? (.-e %)))
-                     (map #(vector (.-e %) (-resolve-eid (.-e %) db)))
-                     (into {}))]
-    (TxReport. db (-with db datoms) datoms tempids)))
+  (transact-entities (TxReport. db db [] {}) entities))
 
 (defn with [db entities]
   (:db-after (transact db entities)))
@@ -406,3 +520,47 @@
 (defn unlisten! [conn key]
   (swap! (:listeners (meta conn)) dissoc key))
 
+(defn- components->pattern [index cs]
+  (case index
+    :eavt (Datom. (nth cs 0 nil) (nth cs 1 nil) (nth cs 2 nil) (nth cs 3 nil) nil)
+    :aevt (Datom. (nth cs 1 nil) (nth cs 0 nil) (nth cs 2 nil) (nth cs 3 nil) nil)
+    :avet (Datom. (nth cs 2 nil) (nth cs 0 nil) (nth cs 1 nil) (nth cs 3 nil) nil)))
+
+(defn datoms [db index & cs]
+  (slice (get db index) (components->pattern index cs)))
+
+(defn seek-datoms [db index & cs]
+  (slice (get db index) (components->pattern index cs) (Datom. nil nil nil nil nil)))
+
+;; printing and reading
+;; #datomic/DB {:schema <map>, :datoms <vector of [e a v tx]>}
+
+(extend-type Datom
+  IPrintWithWriter
+  (-pr-writer [d w opts]
+    (pr-sequential-writer w pr-writer "#datascript/Datom [" " " "]" opts [(.-e d) (.-a d) (.-v d) (.-tx d) (.-added d)])))
+
+(defn datom-from-reader [[e a v tx added]]
+  (Datom. e a v tx added))
+
+(extend-type DB
+  IPrintWithWriter
+  (-pr-writer [db w opts]
+    (-write w "#datascript/DB {")
+    (-write w ":schema ")
+    (pr-writer (.-schema db) w opts)
+    (-write w ", :datoms ")
+    (pr-sequential-writer w
+      (fn [d w opts]
+        (pr-sequential-writer w pr-writer "[" " " "]" opts [(.-e d) (.-a d) (.-v d) (.-tx d)]))
+      "[" " " "]" opts (.-eavt db))
+    (-write w "}")))
+
+(defn db-from-reader [{:keys [schema datoms]}]
+  (let [datoms (map (fn [[e a v tx]] (Datom. e a v tx true)) datoms)]
+    (DB. schema
+         (apply btset-by cmp-datoms-eavt datoms)
+         (apply btset-by cmp-datoms-aevt datoms)
+         (apply btset-by cmp-datoms-avet datoms)
+         (reduce max 0 (map :e datoms))
+         (reduce max tx0 (map :tx datoms)))))

@@ -7,7 +7,6 @@
 
 (enable-console-print!)
 
-
 (deftest test-with
   (let [db  (-> (d/empty-db {:aka { :db/cardinality :db.cardinality/many }})
                 (d/with [[:db/add 1 :name "Ivan"]])
@@ -131,6 +130,27 @@
            #{[1 "Ivan" 19   (+ d/tx0 1)]
              [2 "Petr" 22   (+ d/tx0 1)]
              [3 "Sergey" 30 (+ d/tx0 2)]}))))
+
+(deftest test-resolve-eid-refs
+  (let [conn (d/create-conn {:friend {:db/valueType :db.type/ref
+                                      :db/cardinality :db.cardinality/many}})
+        tx   (d/transact! conn [{:name "Sergey"
+                                 :friend [-1 -2]}
+                                [:db/add -1 :name "Ivan"]
+                                [:db/add -2 :name "Petr"]
+                                [:db/add -4 :name "Boris"]
+                                [:db/add -4 :friend -3]
+                                [:db/add -3 :name "Oleg"]
+                                [:db/add -3 :friend -4]])
+        q '[:find ?fn
+            :in $ ?n
+            :where [?e :name ?n]
+                   [?e :friend ?fe]
+                   [?fe :name ?fn]]]
+    (is (= (:tempids tx) { -1 2, -2 3, -4 4, -3 5 }))
+    (is (= (d/q q @conn "Sergey") #{["Ivan"] ["Petr"]}))
+    (is (= (d/q q @conn "Boris") #{["Oleg"]}))
+    (is (= (d/q q @conn "Oleg") #{["Boris"]}))))
 
 (deftest test-entity
   (let [conn (d/create-conn {:aka {:db/cardinality :db.cardinality/many}})
@@ -487,33 +507,98 @@
                        #(reverse (sort %))))
              #{[:red [5 4 3 2 1]] [:blue [8 7]]})))))
 
+(deftest test-datoms
+  (let [dvec #(vector (.-e %) (.-a %) (.-v %))
+        db (-> (d/empty-db)
+               (d/with [[:db/add 1 :name "Petr"]
+                        [:db/add 1 :age 44]
+                        [:db/add 2 :name "Ivan"]
+                        [:db/add 2 :age 25]
+                        [:db/add 3 :name "Sergey"]
+                        [:db/add 3 :age 11]]))]
+    (testing "Main indexes, sort order"
+      (is (= (map dvec (d/datoms db :aevt))
+             [ [1 :age 44]
+               [2 :age 25]
+               [3 :age 11]
+               [1 :name "Petr"]
+               [2 :name "Ivan"]
+               [3 :name "Sergey"] ]))
 
+      (is (= (map dvec (d/datoms db :eavt))
+             [ [1 :age 44]
+               [1 :name "Petr"]
+               [2 :age 25]      
+               [2 :name "Ivan"]
+               [3 :age 11]
+               [3 :name "Sergey"] ]))
+
+      (is (= (map dvec (d/datoms db :avet))
+             [ [3 :age 11]
+               [2 :age 25]
+               [1 :age 44]
+               [2 :name "Ivan"]
+               [1 :name "Petr"]
+               [3 :name "Sergey"] ])))
+    
+    (testing "Components filtration"
+      (is (= (map dvec (d/datoms db :eavt 1))
+             [ [1 :age 44]
+               [1 :name "Petr"] ]))
+
+      (is (= (map dvec (d/datoms db :eavt 1 :age))
+             [ [1 :age 44] ]))
+
+      (is (= (map dvec (d/datoms db :avet :age))
+             [ [3 :age 11]
+               [2 :age 25]
+               [1 :age 44] ])))))
+
+(deftest test-seek-datoms
+  (let [dvec #(vector (.-e %) (.-a %) (.-v %))
+        db (-> (d/empty-db)
+               (d/with [[:db/add 1 :name "Petr"]
+                        [:db/add 1 :age 44]
+                        [:db/add 2 :name "Ivan"]
+                        [:db/add 2 :age 25]
+                        [:db/add 3 :name "Sergey"]
+                        [:db/add 3 :age 11]]))]
+    
+    (testing "Non-termination"
+      (is (= (map dvec (d/seek-datoms db :avet :age 10))
+             [ [3 :age 11]
+               [2 :age 25]
+               [1 :age 44]
+               [2 :name "Ivan"]
+               [1 :name "Petr"]
+               [3 :name "Sergey"] ])))
+
+    (testing "Closest value lookup"
+      (is (= (map dvec (d/seek-datoms db :avet :name "P"))
+             [ [1 :name "Petr"]
+               [3 :name "Sergey"] ])))
+    
+    (testing "Exact value lookup"
+      (is (= (map dvec (d/seek-datoms db :avet :name "Petr"))
+             [ [1 :name "Petr"]
+               [3 :name "Sergey"] ])))))
+
+(deftest test-pr-read
+  (binding [cljs.reader/*tag-table* (atom {"datascript/Datom" d/datom-from-reader})]
+    (let [d (d/Datom. 1 :name 3 17 true)]
+      (is (= d (cljs.reader/read-string (pr-str d)))))
+    (let [d (d/Datom. 1 :name 3 nil nil)]
+      (is (= d (cljs.reader/read-string (pr-str d))))))
+  
+  (let [db (-> (d/empty-db)
+               (d/with [[:db/add 1 :name "Petr"]
+                        [:db/add 1 :age 44]
+                        [:db/add 2 :name "Ivan"]
+                        [:db/add 2 :age 25]
+                        [:db/add 3 :name "Sergey"]
+                        [:db/add 3 :age 11]]))]
+    (binding [cljs.reader/*tag-table* (atom {"datascript/DB" d/db-from-reader})]
+      (is (= db (cljs.reader/read-string (pr-str db)))))))
 
 ;; (t/test-ns 'test.datascript)
-
-;; Performance
-
-(defn now [] (.getTime (js/Date.)))
-(defn measure [f]
-  (let [t0 (now)
-        res (f)]
-    (- (now) t0)))
-
-(defn random-man []
-  (let [id (rand-int 1000000)]
-    {:db/id id
-     :name      (rand-nth ["Ivan" "Petr" "Sergei" "Oleg" "Yuri" "Dmitry" "Fedor" "Denis"])
-     :last-name (rand-nth ["Ivanov" "Petrov" "Sidorov" "Kovalev" "Kuznetsov" "Voronoi"])
-     :sex       (rand-nth [:male :female])
-     :age       (rand-int 90)}))
-
-;; (measure
-;;   #(def big-db (reduce d/with
-;;                  (d/empty-db)
-;;                  (repeatedly 2000 (fn [] [(random-man)])))))
-;; (measure #(d/q '{:find [?e ?a ?s]
-;;                  :where [[?e :name "Ivan"]
-;;                          [?e :age ?a]
-;;                          [?e :sex ?s]]}
-;;            big-db))
 
