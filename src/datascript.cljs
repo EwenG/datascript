@@ -642,7 +642,7 @@
 (defn revert! [conn tx-data]
   (transact! conn (with-meta (map (fn [{:keys [e a v t added]}] [(if added :db/retract :db/add) e a v]) tx-data) {:type :revert})))
 
-(defn listen!
+#_(defn listen!
   ([conn callback] (listen! conn (rand) callback))
   ([conn key callback]
      (swap! (:listeners (meta conn)) assoc key callback)
@@ -653,6 +653,17 @@
    (let [index-keys (set (map (comp vec rest) (filter #(= @conn (first %)) (apply analyze-q q sources))))]
      (swap! (:q-listeners (meta conn)) assoc key {:index-keys index-keys :callback callback})
      key)))
+
+(defn listen!
+  ([conn callback] (listen! conn (rand) callback))
+  ([conn key callback]
+   (swap! (:listeners (meta conn)) assoc key callback)
+   key)
+  ([conn key callback all-index-keys]
+   (let [index-keys (set (map (comp vec rest) (filter #(= @conn (first %)) all-index-keys)))]
+     (swap! (:q-listeners (meta conn)) assoc key {:index-keys index-keys :callback callback})
+     key)))
+
 
 (defn unlisten! [conn key]
   (swap! (:listeners (meta conn)) dissoc key)
