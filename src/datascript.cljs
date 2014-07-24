@@ -467,7 +467,8 @@
          (if (= '-differ? (ffirst where))
            (when (call (first where) scope)
              (recur nil (next wheres) scope))
-           (recur nil (next wheres) scope))
+           (let [res (call (first where) scope)]
+             (recur [[(second where) res]] (next wheres) scope)))
 
          '[*] ;; pattern
          (let [[source where] (parse-where where)
