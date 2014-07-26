@@ -312,6 +312,12 @@
         f          (or (built-ins f) (scope f))]
     (apply f bound-args)))
 
+(defn- analyze-call [[f & args] scope]
+  (.log js/console (str scope))
+  (let [bound-args (bind-symbols args scope)
+        f          (or (built-ins f) (scope f))]
+    (into [f] bound-args)))
+
 (defn- looks-like? [pattern form]
   (cond
     (= '_ pattern)
@@ -420,10 +426,10 @@
    (let [[in source] (first in+sources)]
      (condp looks-like? in
        '[_ ...] ;; collection binding [?x ...]
-       (mapcat #(-q->index-keys (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+       (apply (partial merge-with set/union) (map #(-q->index-keys (concat [[(first in) %]] (next in+sources)) wheres scope) source))
 
        '[[*]]   ;; relation binding [[?a ?b]]
-       (mapcat #(-q->index-keys (concat [[(first in) %]] (next in+sources)) wheres scope) source)
+       (apply (partial merge-with set/union) (map #(-q->index-keys (concat [[(first in) %]] (next in+sources)) wheres scope) source))
 
        '[*]     ;; tuple binding [?a ?b]
        (recur (concat
@@ -436,10 +442,10 @@
               wheres
               (assoc scope :__rules (group-by ffirst source)))
 
-       '_       ;; regular binding ?x
+       '_                                                   ;; regular binding ?x
        (recur (next in+sources)
-              wheres
-              (assoc scope in source))))
+                       wheres
+                       (assoc scope in source))))
 
    (not-empty wheres) ;; parsing wheres
    (let [where (first wheres)]
@@ -451,9 +457,10 @@
                             (update-in [:__rules_ctx rule] conj call-args)
                             (update-in [:__rules_ctx :__depth] inc))
              next-wheres (next wheres)]
-         (mapcat #(-q->index-keys nil
-                                  (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
-                                  next-scope) rule-branches)
+         (apply (partial merge-with set/union)
+                (map #(-q->index-keys nil
+                                      (concat (bind-rule-branch % call-args (:__rules_ctx scope)) next-wheres)
+                                      next-scope) rule-branches))
          )
 
        (condp looks-like? where
@@ -467,17 +474,22 @@
          (if (= '-differ? (ffirst where))
            (when (call (first where) scope)
              (recur nil (next wheres) scope))
-           (recur nil (next wheres) scope))
+           #_(-q->index-keys nil (next wheres) scope)
+           (update-in (-q->index-keys nil (next wheres) scope)
+                      [:calls]
+                      conj (analyze-call (first where) scope)))
 
          '[*] ;; pattern
          (let [[source where] (parse-where where)
-               found          (index-keys source where scope)
-               next-found (-q->index-keys nil (next wheres) scope)]
-           (set/union (-q->index-keys nil (next wheres) scope) found))
+               found          (index-keys source where scope)]
+           #_(set/union (-q->index-keys nil (next wheres) scope) found)
+           (update-in (-q->index-keys nil (next wheres) scope)
+                      [:index-keys]
+                      set/union found))
          )))
 
    :else ;; reached bottom
-   #{}
+   {:index-keys #{} :calls #{}}
    ))
 
 ;; AGGREGATES
@@ -564,9 +576,11 @@
         ins->sources (zipmap (:in query '[$]) sources)
         find         (concat
                       (map #(if (sequential? %) (last %) %) (:find query))
-                      (:with query))]
-    (set (map #(assoc % 0 (ins->sources (first %)))
-              (filter #(> (count %) 1) (-q->index-keys ins->sources (:where query) {:__find find}))))))
+                      (:with query))
+        analyze-result (-q->index-keys ins->sources (:where query) {:__find find})
+        process-index-keys (fn [index-keys] (set (map #(assoc % 0 (ins->sources (first %)))
+                                            (filter #(> (count %) 1) index-keys))))]
+    (update-in analyze-result [:index-keys] process-index-keys)))
 
 
 (defn q [query & sources]
@@ -660,7 +674,7 @@
    (swap! (:listeners (meta conn)) assoc key callback)
    key)
   ([conn key callback all-index-keys]
-   (let [index-keys (set (map (comp vec rest) (filter #(= @conn (first %)) all-index-keys)))]
+   (let [index-keys (set (map (comp vec rest) (filter #(= conn (first %)) all-index-keys)))]
      (swap! (:q-listeners (meta conn)) assoc key {:index-keys index-keys :callback callback})
      key)))
 
@@ -713,3 +727,6 @@
          (apply btset-by cmp-datoms-avet datoms)
          (reduce max 0 (map :e datoms))
          (reduce max tx0 (map :tx datoms)))))
+
+
+

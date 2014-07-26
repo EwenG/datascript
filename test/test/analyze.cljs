@@ -16,10 +16,13 @@
 
     (is (= (d/analyze-q '[:find ?v
                   :where [1 :name ?v]] db)
-           #{[db :eavt 1 :name]}))
+           {:index-keys #{[db :eavt 1 :name]}
+            :calls #{}}))
     (is (= (d/analyze-q '[:find ?v
                   :where [1 :aka ?v]] db)
-           #{[db :eavt 1 :aka]}))))
+           {:index-keys #{[db :eavt 1 :aka]}
+            :calls #{}}))))
+
 
 (deftest test-joins
   (let [db (-> (d/empty-db)
@@ -29,21 +32,26 @@
                          { :db/id 4, :age 15 }]))]
     (is (= (d/analyze-q '[:find ?e
                   :where [?e :name]] db)
-           #{[db :avet :name]}))
+           {:index-keys #{[db :avet :name]}
+            :calls #{}}))
     (is (= (d/analyze-q '[:find  ?e ?v
                   :where [?e :name "Ivan"]
                          [?e :age ?v]] db)
-           #{[db :avet :name "Ivan"][db :avet :age]}))
+           {:index-keys #{[db :avet :name "Ivan"] [db :avet :age]}
+            :calls #{}}))
     (is (= (d/analyze-q '[:find  ?e1 ?e2
                   :where [?e1 :name ?n]
                          [?e2 :name ?n]] db)
-           #{[db :avet :name]}))
+           {:index-keys #{[db :avet :name]}
+            :calls #{}}))
     (is (= (d/analyze-q '[:find  ?e ?e2 ?n
                   :where [?e :name "Ivan"]
                          [?e :age ?a]
                          [?e2 :age ?a]
                          [?e2 :name ?n]] db)
-           #{[db :avet :name "Ivan"][db :avet :age][db :avet :name]}))))
+           {:index-keys #{[db :avet :name "Ivan"] [db :avet :age] [db :avet :name]}
+            :calls #{}}))))
+
 
 (deftest test-q-coll
   (let [db [ [1 :name "Ivan"]
@@ -54,7 +62,9 @@
                    :where [?e :aka "dragon_killer_94"]
                           [?e :name ?n]
                           [?e :age  ?a]] db)
-           #{[db :avet :aka "dragon_killer_94"][db :avet :name][db :avet :age]}))))
+           {:index-keys #{[db :avet :aka "dragon_killer_94"] [db :avet :name] [db :avet :age]}
+            :calls #{}}))))
+
 
 (deftest test-q-in
   (let [db (-> (d/empty-db)
@@ -69,15 +79,18 @@
                 :in    [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}]
     (is (= (d/analyze-q query db :name "Ivan")
-           #{[db :avet :name "Ivan"]}))
+           {:index-keys #{[db :avet :name "Ivan"]}
+            :calls #{}}))
     (is (= (d/analyze-q query db :age 37)
-           #{[db :avet :age 37]}))
+           {:index-keys #{[db :avet :age 37]}
+            :calls #{}}))
 
     (testing "Named DB"
       (is (= (d/analyze-q '[:find  ?a ?v
                     :in    $db ?e
                     :where [$db ?e ?a ?v]] db 1)
-             #{[db :eavt 1]})))
+             {:index-keys #{[db :eavt 1]}
+              :calls #{}})))
 
     (testing "DB join with collection"
       (is (= (d/analyze-q '[:find  ?e ?email
@@ -87,7 +100,8 @@
                   db
                   [["Ivan" "ivan@mail.ru"]
                    ["Petr" "petr@gmail.com"]])
-             #{[db :avet :name]})))
+             {:index-keys #{[db :avet :name]}
+              :calls #{}})))
 
     (testing "Relation binding"
       (is (= (d/analyze-q '[:find  ?e ?email
@@ -96,7 +110,8 @@
                   db
                   [["Ivan" "ivan@mail.ru"]
                    ["Petr" "petr@gmail.com"]])
-             #{[db :avet :name "Ivan"][db :avet :name "Petr"]})))
+             {:index-keys #{[db :avet :name "Ivan"] [db :avet :name "Petr"]}
+              :calls #{}})))
 
     (testing "Tuple binding"
       (is (= (d/analyze-q '[:find  ?e
@@ -104,14 +119,16 @@
                     :where [?e :name ?name]
                            [?e :age ?age]]
                   db ["Ivan" 37])
-             #{[db :avet :name "Ivan"][db :avet :age 37]})))
+             {:index-keys #{[db :avet :name "Ivan"] [db :avet :age 37]}
+              :calls #{}})))
 
     (testing "Collection binding"
       (is (= (d/analyze-q '[:find  ?attr ?value
                     :in    $ ?e [?attr ...]
                     :where [?e ?attr ?value]]
                   db 1 [:name :age])
-             #{[db :eavt 1 :name][db :eavt 1 :age]})))
+             {:index-keys #{[db :eavt 1 :name] [db :eavt 1 :age]}
+              :calls #{}})))
 
     (testing "Query multiple DB's"
     (is (= (d/analyze-q '[:find ?e1 ?e2
@@ -119,13 +136,17 @@
                           :where
                           [$1 ?e1 :name ?n]
                           [$2 ?e2 :name ?n]] db db2)
-           #{[db :avet :name][db2 :avet :name]}))))
+           {:index-keys #{[db :avet :name] [db2 :avet :name]}
+            :calls #{}}))))
 
   (testing "Query without DB"
     (is (= (d/analyze-q '[:find ?a ?b
                   :in   ?a ?b]
                 10 20)
-           #{}))))
+           {:index-keys #{}
+            :calls #{}}))))
+
+
 
 (deftest test-user-funs
   (let [db (-> (d/empty-db)
@@ -137,12 +158,14 @@
                     :where [?e1 :age ?a1]
                            [?e2 :age ?a2]
                            [(< ?a1 18 ?a2)]] db)
-             #{[db :avet :age]}))
+             {:index-keys #{[db :avet :age]}
+              :calls #{}}))
       (is (= (d/analyze-q '[:find  ?e1 ?e2
                     :where [(< ?a1 18 ?a2)]
                            [?e1 :age ?a1]
                            [?e2 :age ?a2]] db)
-             #{[db :avet :age]})))
+             {:index-keys #{[db :avet :age]}
+              :calls #{}})))
 
     (testing "Passing predicate as source"
       (is (= (d/analyze-q '[:find  ?e
@@ -151,7 +174,8 @@
                            [(?adult ?a)]]
                   db
                   #(> % 18))
-             #{[db :avet :age]})))
+             {:index-keys #{[db :avet :age]}
+              :calls #{}})))
 
     (testing "Calling a function"
       (is (= (d/analyze-q '[:find  ?e1 ?e2 ?e3
@@ -161,7 +185,8 @@
                            [(+ ?a1 ?a2) ?a12]
                            [(= ?a12 ?a3)]]
                   db)
-             #{[db :avet :age]}))
+             {:index-keys #{[db :avet :age]}
+              :calls #{[+ nil nil]}}))
       (is (= (d/analyze-q '[:find  ?e1 ?e2 ?e3
                     :where [(+ ?a1 ?a2) ?a12]
                            [(= ?a12 ?a3)]
@@ -169,7 +194,8 @@
                            [?e2 :age ?a2]
                            [?e3 :age ?a3]]
                   db)
-             #{[db :avet :age]})))))
+             {:index-keys #{[db :avet :age]}
+              :calls #{[+ nil nil]}})))))
 
 (deftest test-rules
   (let [db [                  [5 :follow 3]
@@ -181,7 +207,8 @@
                 db
                '[[(follow ?x ?y)
                   [?x :follow ?y]]])
-           #{[db :avet :follow]}))
+           {:index-keys #{[db :avet :follow]}
+            :calls #{}}))
 
     (testing "Rule with branches"
       (is (= (d/analyze-q '[:find  ?e2
@@ -194,7 +221,8 @@
                    [(follow ?e2 ?e1)
                     [?e2 :follow ?t]
                     [?t  :follow ?e1]]])
-             #{[db :eavt 1 :follow][db :avet :follow]})))
+             {:index-keys #{[db :eavt 1 :follow] [db :avet :follow]}
+              :calls #{}})))
 
     (testing "Recursive rule"
       (is (= (d/analyze-q '[:find  ?e2
@@ -207,7 +235,9 @@
                    [(follow ?e1 ?e2)
                     [?e1 :follow ?t]
                     (follow ?t ?e2)]])
-             #{[db :eavt 1 :follow][db :avet :follow]})))))
+             {:index-keys #{[db :eavt 1 :follow] [db :avet :follow]}
+              :calls #{}})))))
+
 
 (deftest test-aggregates
   (let [db (d/create-conn {})]
@@ -215,7 +245,9 @@
                            :where
                            [?e :heads ?heads]]
                         db)
-           #{[db :avet :heads]}))))
+           {:index-keys #{[db :avet :heads]}
+            :calls #{}}))))
+
 
 (deftest test-listen-q!
   (let [conn    (d/create-conn)
@@ -223,7 +255,7 @@
         q '[:find ?e ?n :where [?e :name ?n]]]
     (d/transact! conn [[:db/add -1 :name "Alex"]
                        [:db/add -2 :name "Boris"]])
-    (d/listen! conn :test #(swap! reports conj %) q [@conn])
+    (d/listen! conn :test #(swap! reports conj %) (-> (d/analyze-q q conn) :index-keys))
     (d/transact! conn [[:db/add -1 :name "Dima"]
                        [:db/add -1 :age 19]
                        [:db/add -2 :name "Evgeny"]])
@@ -242,3 +274,4 @@
               [1 :name "Alex"   (+ d/tx0 3) false] ;; update -> retract
               [1 :name "Alex2"  (+ d/tx0 3) true]  ;;         + add
               [4 :name "Evgeny" (+ d/tx0 3) false]}]))))
+
