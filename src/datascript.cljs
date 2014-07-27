@@ -313,7 +313,6 @@
     (apply f bound-args)))
 
 (defn- analyze-call [[f & args] scope]
-  (.log js/console (str scope))
   (let [bound-args (bind-symbols args scope)
         f          (or (built-ins f) (scope f))]
     (into [f] bound-args)))
@@ -643,7 +642,7 @@
                     (:db-after r))))
     @report))
 
-(defn transact! [conn entities]
+#_(defn transact! [conn entities]
   (let [report (-transact! conn entities)]
     (doseq [[_ callback] @(:listeners (meta conn))]
       (callback report))
@@ -652,6 +651,23 @@
         (doseq [[key {:keys [index-keys callback]}] @(:q-listeners (meta conn))]
           (when (not-empty (set/intersection index-keys tx-index-keys)) (callback report)))))
     report))
+
+(defn transact! [conn entities]
+  (let [report (-transact! conn entities)]
+    (doseq [[_ callback] @(:listeners (meta conn))]
+      (callback report))
+    (when (not-empty (-> @(:q-listeners (meta conn)) :index-keys))
+      (let [tx-index-keys (reduce set/union #{} (map datom->index-keys (:tx-data report)))
+            all-callbacks (atom #{})]
+        (doseq [single-index-keys tx-index-keys]
+          (when-let [callbacks (-> @(:q-listeners (meta conn))
+                                   :index-keys
+                                   (get single-index-keys))]
+            (swap! all-callbacks into callbacks)))
+        (doseq [callback @all-callbacks]
+          (callback report))))
+    report))
+
 
 (defn revert! [conn tx-data]
   (transact! conn (with-meta (map (fn [{:keys [e a v t added]}] [(if added :db/retract :db/add) e a v]) tx-data) {:type :revert})))
@@ -668,7 +684,7 @@
      (swap! (:q-listeners (meta conn)) assoc key {:index-keys index-keys :callback callback})
      key)))
 
-(defn listen!
+#_(defn listen!
   ([conn callback] (listen! conn (rand) callback))
   ([conn key callback]
    (swap! (:listeners (meta conn)) assoc key callback)
@@ -678,10 +694,47 @@
      (swap! (:q-listeners (meta conn)) assoc key {:index-keys index-keys :callback callback})
      key)))
 
+(defn listen!
+  ([conn callback] (listen! conn (rand) callback))
+  ([conn key callback]
+   (swap! (:listeners (meta conn)) assoc key callback)
+   key)
+  ([conn key callback all-index-keys]
+   (let [index-keys (set (map (comp vec rest) (filter #(= conn (first %)) all-index-keys)))
+         add-callback (fn [q-listeners]
+                        (let [q-listeners (atom q-listeners)]
+                          (doseq [single-index-keys index-keys]
+                            (swap! q-listeners update-in
+                                   [:index-keys single-index-keys]
+                                   (comp set conj) callback))
+                          @q-listeners))
+         add-callback-key (fn [q-listeners]
+                            (assoc q-listeners key {:index-keys index-keys :callback callback}))]
+     (swap! (:q-listeners (meta conn)) (comp add-callback-key add-callback))
+     key)))
+
 
 (defn unlisten! [conn key]
   (swap! (:listeners (meta conn)) dissoc key)
-  (swap! (:q-listeners (meta conn)) dissoc key))
+  (let [rem-callback (fn [q-listeners]
+                       (let [callback (-> (get q-listeners key) :callback)
+                             index-keys (-> (get q-listeners key) :index-keys)
+                             q-listeners (atom q-listeners)]
+                         (doseq [single-index-keys index-keys]
+                           (swap! q-listeners update-in
+                                  [:index-keys single-index-keys]
+                                  disj callback)
+                           (when (empty? (-> (:index-keys @q-listeners)
+                                             (get single-index-keys)))
+                             (swap! q-listeners update-in
+                                    [:index-keys]
+                                    dissoc single-index-keys)))
+                         @q-listeners))
+        rem-callback-key (fn [q-listeners]
+                           (dissoc q-listeners key))]
+    (swap! (:q-listeners (meta conn)) (comp rem-callback-key rem-callback))))
+
+
 
 (defn- components->pattern [index cs]
   (case index
