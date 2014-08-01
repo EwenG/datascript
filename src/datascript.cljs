@@ -212,7 +212,7 @@
   (let [tx (current-tx report)]
     (transact-report report (Datom. (.-e d) (.-a d) (.-v d) tx false))))
 
-(defn- transact-entities [report [entity & entities :as es]]
+(defn- transact-entities [db-begin report [entity & entities :as es]]
   (let [db (:db-after report)]
     (cond
       (nil? entity)
@@ -221,10 +221,10 @@
 
       (map? entity)
         (if (:db/id entity)
-          (recur report (concat (explode db entity) entities))
+          (recur db-begin report (concat (explode db entity) entities))
           (let [eid    (next-eid db)
                 entity (assoc entity :db/id eid)]
-            (recur (allocate-eid report eid)
+            (recur db-begin (allocate-eid report eid)
                    (concat [entity] entities))))
 
       :else
@@ -232,33 +232,33 @@
           (cond
             (= op :db.fn/call)
               (let [[_ f & args] entity]
-                (recur report (concat (apply f db args) entities)))
+                (recur db-begin report (concat (apply f db-begin args) entities)))
 
             (neg? e)
               (if-let [eid (get-in report [:tempids e])]
-                (recur report (concat [[op eid a v]] entities))
-                (recur (allocate-eid report e (next-eid db)) es))
+                (recur db-begin report (concat [[op eid a v]] entities))
+                (recur db-begin (allocate-eid report e (next-eid db)) es))
 
             (and (ref? db a) (neg? v))
               (if-let [vid (get-in report [:tempids v])]
-                (recur report (concat [[op e a vid]] entities))
-                (recur (allocate-eid report v (next-eid db)) es))
+                (recur db-begin report (concat [[op e a vid]] entities))
+                (recur db-begin (allocate-eid report v (next-eid db)) es))
 
             (= op :db/add)
-              (recur (transact-add report entity) entities)
+              (recur db-begin (transact-add report entity) entities)
 
             (= op :db/retract)
               (if-let [old-datom (first (-search db [e a v]))]
-                (recur (transact-retract-datom report old-datom) entities)
-                (recur report entities))
+                (recur db-begin (transact-retract-datom report old-datom) entities)
+                (recur db-begin report entities))
 
             (= op :db.fn/retractAttribute)
               (let [datoms (-search db [e a])]
-                (recur (reduce transact-retract-datom report datoms) entities))
+                (recur db-begin (reduce transact-retract-datom report datoms) entities))
 
             (= op :db.fn/retractEntity)
               (let [datoms (-search db [e])]
-                (recur (reduce transact-retract-datom report datoms) entities)))))))
+                (recur db-begin (reduce transact-retract-datom report datoms) entities)))))))
 
 ;; QUERIES
 
@@ -629,7 +629,7 @@
     [:avet a v]})
 
 (defn transact [db entities]
-  (transact-entities (with-meta (TxReport. db db [] {}) (meta entities)) entities))
+  (transact-entities db (with-meta (TxReport. db db [] {}) (meta entities)) entities))
 
 (defn with [db entities]
   (:db-after (transact db entities)))
