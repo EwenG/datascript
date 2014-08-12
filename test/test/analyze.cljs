@@ -252,10 +252,11 @@
 (deftest test-listen-q!
   (let [conn    (d/create-conn)
         reports (atom [])
-        q '[:find ?e ?n :where [?e :name ?n]]]
+        q '[:find ?e ?n :where [?e :name ?n]]
+        callback #(swap! reports conj %)]
     (d/transact! conn [[:db/add -1 :name "Alex"]
                        [:db/add -2 :name "Boris"]])
-    (d/listen! conn :test #(swap! reports conj %) (-> (d/analyze-q q conn) :index-keys))
+    (d/listen! conn callback (-> (d/analyze-q q conn) :index-keys))
     (d/transact! conn [[:db/add -1 :name "Dima"]
                        [:db/add -1 :age 19]
                        [:db/add -2 :name "Evgeny"]])
@@ -264,7 +265,7 @@
                        [:db/retract 2 :name "Not Boris"] ;; should be skipped
                        [:db/retract 4 :name "Evgeny"]])
     (d/transact! conn [[:db/add -1 :age 22]]) ;; Should be skipped
-    (d/unlisten! conn :test)
+    (d/unlisten! conn callback)
     (d/transact! conn [[:db/add -1 :name "Geogry"]])
     (is (= (map (fn [report] (set (map #(into [] %) (:tx-data report)))) @reports)
            [#{[3 :name "Dima"   (+ d/tx0 2) true]

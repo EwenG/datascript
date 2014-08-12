@@ -617,8 +617,7 @@
 
 (defn create-conn [& [schema]]
   (atom (empty-db schema)
-        :meta { :listeners  (atom {})
-                :q-listeners (atom {}) }))
+        :meta { :listeners  (atom {})}))
 
 (defn- datom->index-keys
   [{:keys [e a v t added]}]
@@ -652,7 +651,7 @@
           (when (not-empty (set/intersection index-keys tx-index-keys)) (callback report)))))
     report))
 
-(defn transact! [conn entities]
+#_(defn transact! [conn entities]
   (let [report (-transact! conn entities)]
     (doseq [[_ callback] @(:listeners (meta conn))]
       (callback report))
@@ -667,6 +666,59 @@
         (doseq [callback @all-callbacks]
           (callback report))))
     report))
+
+(defprotocol IPublish
+  (publish [this report]))
+
+(extend-type function
+  IPublish
+  (publish [this report]
+    (this report)))
+
+(defn transact! [conn entities]
+  (let [report (-transact! conn entities)]
+    (let [listeners (:listeners (meta conn))]
+      (when (not-empty (-> @listeners :callbacks->index-keys))
+        (let [tx-index-keys (reduce set/union #{} (map datom->index-keys (:tx-data report)))
+              all-index-keys-callbacks (-> @listeners
+                                   :index-keys->callbacks
+                                   :all-index-keys)
+              all-callbacks (atom (into #{} all-index-keys-callbacks))]
+          (doseq [single-index-keys tx-index-keys]
+            (when-let [callbacks (-> @listeners
+                                     :index-keys->callbacks
+                                     (get single-index-keys))]
+              (swap! all-callbacks into callbacks)))
+          (doseq [callback @all-callbacks]
+            (publish callback report)))))
+    report))
+
+(comment
+  (let [conn    (create-conn)
+        q '[:find ?e ?n :where [?e :name ?n]]
+        q2 '[:find ?e ?n :where [?e :name2 ?n]]
+        callback #(.log js/console (str "callback " (:tx-data %)))
+        c (async/chan)]
+    (go-loop [ch c]
+             (when-let [val (async/<! ch)]
+               (callback val)
+               (recur ch))
+             (async/close! ch))
+    #_(listen! conn callback (-> (analyze-q q conn) :index-keys))
+    #_(listen! conn callback (into (-> (analyze-q q2 conn) :index-keys)
+                                 (-> (analyze-q q conn) :index-keys)))
+
+    (listen! conn c (-> (analyze-q q conn) :index-keys))
+
+    (transact! conn [[:db/add -1 :name "Alex"]
+                     [:db/add -2 :name "Boris"]])
+
+    #_@(:listeners (meta conn))
+
+    )
+
+
+  )
 
 
 (defn revert! [conn tx-data]
@@ -694,7 +746,8 @@
      (swap! (:q-listeners (meta conn)) assoc key {:index-keys index-keys :callback callback})
      key)))
 
-(defn listen!
+
+#_(defn listen!
   ([conn callback] (listen! conn (rand) callback))
   ([conn key callback]
    (swap! (:listeners (meta conn)) assoc key callback)
@@ -713,26 +766,116 @@
      (swap! (:q-listeners (meta conn)) (comp add-callback-key add-callback))
      key)))
 
+(defn clean-index-key->callback [listeners index-key]
+  (if (empty? (-> listeners
+                  :index-keys->callbacks
+                  (get index-key)))
+    (update-in listeners [:index-keys->callbacks] dissoc index-key)
+    listeners))
 
-(defn unlisten! [conn key]
-  (swap! (:listeners (meta conn)) dissoc key)
-  (let [rem-callback (fn [q-listeners]
-                       (let [callback (-> (get q-listeners key) :callback)
-                             index-keys (-> (get q-listeners key) :index-keys)
-                             q-listeners (atom q-listeners)]
-                         (doseq [single-index-keys index-keys]
-                           (swap! q-listeners update-in
-                                  [:index-keys single-index-keys]
-                                  disj callback)
-                           (when (empty? (-> (:index-keys @q-listeners)
-                                             (get single-index-keys)))
-                             (swap! q-listeners update-in
-                                    [:index-keys]
-                                    dissoc single-index-keys)))
-                         @q-listeners))
-        rem-callback-key (fn [q-listeners]
-                           (dissoc q-listeners key))]
-    (swap! (:q-listeners (meta conn)) (comp rem-callback-key rem-callback))))
+(defn rem-index-key->callback [listeners index-key callback]
+  (-> (update-in listeners [:index-keys->callbacks index-key]
+                  disj callback)
+      (clean-index-key->callback index-key)))
+
+(defn add-index-key->callback [listeners index-key callback ]
+  (update-in listeners [:index-keys->callbacks index-key]
+             (comp set conj) callback))
+
+(defn rem-index-keys->callback [listeners index-keys callback]
+  (reduce #(rem-index-key->callback %1 %2 callback) listeners index-keys))
+
+(defn add-index-keys->callback [listeners index-keys callback]
+  (reduce #(add-index-key->callback %1 %2 callback) listeners index-keys))
+
+(defn add-callback->index-keys [listeners index-keys callback]
+  (assoc-in listeners [:callbacks->index-keys callback] index-keys))
+
+(defn rem-callback->index-keys [listeners callback]
+  (update-in listeners [:callbacks->index-keys] dissoc callback))
+
+(defn listen!
+  ([conn callback] (let [listeners (:listeners (meta conn))
+                         index-keys (-> @listeners
+                                        :callbacks->index-keys
+                                        (get callback))
+                         rem-index-keys->callback-fn (if (and index-keys (not= #{:all-index-keys} index-keys))
+                                                       #(rem-index-keys->callback % index-keys callback)
+                                                       identity)
+                         add-index-keys->callback-fn #(add-index-keys->callback % #{:all-index-keys} callback)
+                         add-callback->index-keys #(add-callback->index-keys % #{:all-index-keys} callback)]
+                     (swap! listeners (comp add-callback->index-keys
+                                            add-index-keys->callback-fn
+                                            rem-index-keys->callback-fn))))
+  ([conn callback index-keys]
+   (let [listeners (:listeners (meta conn))
+         index-keys (set (map (comp vec rest) (filter #(= conn (first %)) index-keys)))
+         old-index-keys (-> @listeners
+                        :callbacks->index-keys
+                        (get callback))
+         diff-index-keys (clojure.data/diff old-index-keys index-keys)
+         rem-index-keys (first diff-index-keys)
+         add-index-keys (second diff-index-keys)
+         rem-index-keys->callback-fn #(rem-index-keys->callback % rem-index-keys callback)
+         add-index-keys->callback-fn #(add-index-keys->callback % add-index-keys callback)
+         add-callback->index-keys #(add-callback->index-keys % index-keys callback)]
+     (swap! listeners (comp add-callback->index-keys
+                            add-index-keys->callback-fn
+                            rem-index-keys->callback-fn)))))
+
+
+(defn disj-pred [s pred]
+  (clojure.set/difference s (clojure.set/select pred s)))
+
+#_(defn unlisten!
+  ([conn key]
+   (swap! (:listeners (meta conn)) dissoc key)
+   (let [rem-callback (fn [q-listeners]
+                        (let [index-keys (-> (get q-listeners key) :index-keys)
+                              q-listeners (atom q-listeners)]
+                          (doseq [single-index-keys index-keys]
+                            (swap! q-listeners update-in
+                                   [:index-keys single-index-keys]
+                                   disj-pred #(= key (:key %)))
+                            (when (empty? (-> (:index-keys @q-listeners)
+                                              (get single-index-keys)))
+                              (swap! q-listeners update-in
+                                     [:index-keys]
+                                     dissoc single-index-keys)))
+                          @q-listeners))
+         rem-callback-key (fn [q-listeners]
+                            (dissoc q-listeners key))]
+     (swap! (:q-listeners (meta conn)) (comp rem-callback-key rem-callback))))
+  ([conn key all-index-keys]
+   (let [rem-callback (fn [q-listeners]
+                        (let [q-listeners (atom q-listeners)]
+                          (doseq [single-index-keys all-index-keys]
+                            (swap! q-listeners update-in
+                                   [:index-keys single-index-keys]
+                                   disj-pred #(= key (:key %)))
+                            (when (empty? (-> (:index-keys @q-listeners)
+                                              (get single-index-keys)))
+                              (swap! q-listeners update-in
+                                     [:index-keys]
+                                     dissoc single-index-keys)))
+                          @q-listeners))
+         rem-callback-key (fn [q-listeners]
+                            (let [q-listeners (atom q-listeners)]
+                              (swap! q-listeners update-in [key :index-keys] clojure.set/difference all-index-keys)
+                              (when (empty? (-> (get @q-listeners key) :index-keys))
+                                (swap! q-listeners dissoc key))
+                              @q-listeners))]
+     (swap! (:q-listeners (meta conn)) (comp rem-callback-key rem-callback)))))
+
+(defn unlisten! [conn callback]
+  (let [listeners (:listeners (meta conn))
+        old-index-keys (-> @listeners
+                           :callbacks->index-keys
+                           (get callback))
+        rem-index-keys->callback-fn #(rem-index-keys->callback % old-index-keys callback)
+        rem-callback->index-keys #(rem-callback->index-keys % callback)]
+    (swap! listeners (comp rem-callback->index-keys
+                           rem-index-keys->callback-fn))))
 
 
 
