@@ -795,24 +795,25 @@
   (update-in listeners [:callbacks->index-keys] dissoc callback))
 
 (defn listen!
-  ([conn callback] (let [listeners (:listeners (meta conn))
-                         index-keys (-> @listeners
-                                        :callbacks->index-keys
-                                        (get callback))
-                         rem-index-keys->callback-fn (if (and index-keys (not= #{:all-index-keys} index-keys))
-                                                       #(rem-index-keys->callback % index-keys callback)
-                                                       identity)
-                         add-index-keys->callback-fn #(add-index-keys->callback % #{:all-index-keys} callback)
-                         add-callback->index-keys #(add-callback->index-keys % #{:all-index-keys} callback)]
-                     (swap! listeners (comp add-callback->index-keys
-                                            add-index-keys->callback-fn
-                                            rem-index-keys->callback-fn))))
+  ([conn callback]
+   (let [listeners (:listeners (meta conn))
+         index-keys (-> @listeners
+                        :callbacks->index-keys
+                        (get callback))
+         rem-index-keys->callback-fn (if (and index-keys (not= #{:all-index-keys} index-keys))
+                                       #(rem-index-keys->callback % index-keys callback)
+                                       identity)
+         add-index-keys->callback-fn #(add-index-keys->callback % #{:all-index-keys} callback)
+         add-callback->index-keys #(add-callback->index-keys % #{:all-index-keys} callback)]
+     (swap! listeners (comp add-callback->index-keys
+                            add-index-keys->callback-fn
+                            rem-index-keys->callback-fn))))
   ([conn callback index-keys]
    (let [listeners (:listeners (meta conn))
          index-keys (set (map (comp vec rest) (filter #(= conn (first %)) index-keys)))
          old-index-keys (-> @listeners
-                        :callbacks->index-keys
-                        (get callback))
+                            :callbacks->index-keys
+                            (get callback))
          diff-index-keys (clojure.data/diff old-index-keys index-keys)
          rem-index-keys (first diff-index-keys)
          add-index-keys (second diff-index-keys)
