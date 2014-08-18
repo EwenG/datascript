@@ -221,7 +221,7 @@
                    [(follow ?e2 ?e1)
                     [?e2 :follow ?t]
                     [?t  :follow ?e1]]])
-             {:index-keys #{[db :eavt 1 :follow] [db :avet :follow]}
+             {:index-keys #{#_[db :eavt 1 :follow] [db :avet :follow]}
               :calls #{}})))
 
     (testing "Recursive rule"
@@ -235,7 +235,7 @@
                    [(follow ?e1 ?e2)
                     [?e1 :follow ?t]
                     (follow ?t ?e2)]])
-             {:index-keys #{[db :eavt 1 :follow] [db :avet :follow]}
+             {:index-keys #{#_[db :eavt 1 :follow] [db :avet :follow]}
               :calls #{}})))))
 
 

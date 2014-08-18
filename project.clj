@@ -1,4 +1,7 @@
 (def version "0.1.6-analyze-q")
+=======
+(def version "0.2.0")
+>>>>>>> remotes/tonsky/master
 
 (defproject datascript version
   :description "An implementation of Datomic in-memory database and Datalog query engine in ClojureScript"
@@ -8,7 +11,7 @@
   
   :dependencies [
     [org.clojure/clojure "1.6.0"]
-    [org.clojure/clojurescript "0.0-2268"]
+    [org.clojure/clojurescript "0.0-2280"]
   ]
   :cljsbuild { 
     :builds [
@@ -18,6 +21,7 @@
           :output-to     ~(str "web/datascript-" version ".min.js")
           :optimizations :advanced
           :pretty-print  false
+          :externs       ["src/externs.js"]
         }}
   ]}
 

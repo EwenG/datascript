@@ -206,9 +206,6 @@
         attr->prop     (->> (map vector pattern ["e" "a" "v" "tx"])
                             (filter (fn [[s _]] (free-var? s)))
                             (into {}))]
-    #_(.log js/console "datoms " datoms)
-    #_(println "pattern " pattern "\n")
-    #_(println "attr->prop " attr->prop "\n")
     (Relation. attr->prop datoms)))
 
 (defn matches-pattern? [pattern tuple]
@@ -274,13 +271,10 @@
       (apply f resolved-args))))
 
 (defn filter-by-pred [context clause]
-  #_(println "clause " clause "\n")
   (let [[[f & args]] clause
         pred         (or (get built-ins f)
                          (context-resolve-val context f))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
-        #__   #_(println "context " context "\n")
-        #__   #_(println "production " production "\n")
         tuple-pred   (-call-fn production pred args)
         new-rel      (update-in production [:tuples] #(filter tuple-pred %))]
     (update-in context [:rels] conj new-rel)))
@@ -418,7 +412,6 @@
 
     '[*] ;; pattern
       (let [relation (lookup-pattern context clause)]
-        #_(println (-> (:rels context) (collapse-rels relation)) "\n")
         (update-in context [:rels] collapse-rels relation))))
 
 (defn resolve-clause [context clause]

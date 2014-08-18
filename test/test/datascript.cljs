@@ -2,8 +2,10 @@
   (:require-macros
     [cemerick.cljs.test :refer (is deftest with-test run-tests testing test-var)])
   (:require
-    [cemerick.cljs.test :as t]
-    [datascript :as d]))
+    [datascript.core :as dc]
+    [datascript :as d]
+    [cljs.reader]
+    [cemerick.cljs.test :as t]))
 
 (enable-console-print!)
 
@@ -399,18 +401,18 @@
 
 
 (deftest test-rules
-  (let [db [                  [5 :follow 3]
-            [1 :follow 2] [2 :follow 3] [3 :follow 4] [4 :follow 6]
-                          [2         :follow           4]]]
-    (is (= (d/q '[:find  ?e1 ?e2
-                  :in    $ %
-                  :where (follow ?e1 ?e2)]
-                db
-               '[[(follow ?x ?y)
-                  [?x :follow ?y]]])
-           #{[1 2] [2 3] [3 4] [2 4] [5 3] [4 6]}))
-    
-    (testing "Rule with branches"
+         (let [db [                  [5 :follow 3]
+                                     [1 :follow 2] [2 :follow 3] [3 :follow 4] [4 :follow 6]
+                                     [2         :follow           4]]]
+           (is (= (d/q '[:find  ?e1 ?e2
+                         :in    $ %
+                         :where (follow ?e1 ?e2)]
+                       db
+                       '[[(follow ?x ?y)
+                          [?x :follow ?y]]])
+                  #{[1 2] [2 3] [3 4] [2 4] [5 3] [4 6]}))
+
+           (testing "Rule with branches"
       (is (= (d/q '[:find  ?e2
                     :in    $ ?e1 %
                     :where (follow ?e1 ?e2)]
@@ -423,7 +425,7 @@
                     [?t  :follow ?e1]]])
              #{[2] [3] [4]})))
     
-    (testing "Recursive rule"
+    (testing "Recursive rules"
       (is (= (d/q '[:find  ?e2
                     :in    $ ?e1 %
                     :where (follow ?e1 ?e2)]
@@ -434,8 +436,28 @@
                    [(follow ?e1 ?e2)
                     [?e1 :follow ?t]
                     (follow ?t ?e2)]])
-             #{[2] [3] [4] [6]})))
-    
+             #{[2] [3] [4] [6]}))
+      
+      (is (= (d/q '[:find ?e1 ?e2
+                     :in $ %
+                     :where (follow ?e1 ?e2)]
+                    [[1 :follow 2] [2 :follow 3]]
+                   '[[(follow ?e1 ?e2)
+                      [?e1 :follow ?e2]]
+                     [(follow ?e1 ?e2)
+                      (follow ?e2 ?e1)]])
+           #{[1 2] [2 3] [2 1] [3 2]}))
+      
+      (is (= (d/q '[:find ?e1 ?e2
+                     :in $ %
+                     :where (follow ?e1 ?e2)]
+                    [[1 :follow 2] [2 :follow 3] [3 :follow 1]]
+                   '[[(follow ?e1 ?e2)
+                      [?e1 :follow ?e2]]
+                     [(follow ?e1 ?e2)
+                      (follow ?e2 ?e1)]])
+           #{[1 2] [2 3] [3 1] [2 1] [3 2] [1 3]})))
+        
     (testing "Mutually recursive rules"
       (is (= (d/q '[:find  ?e1 ?e2
                     :in    $ %
@@ -460,8 +482,21 @@
               [1 3] [1 5]
               [2 3] [2 5]
               [3 5]
-              [4 5]})))))
-
+              [4 5]}))))
+  
+  (testing "Specifying db to rule"
+    (is (= (d/q '[ :find ?n
+                    :in   $sexes $ages %
+                    :where ($sexes male ?n)
+                           ($ages adult ?n) ]
+                  [["Ivan" :male] ["Darya" :female] ["Oleg" :male] ["Igor" :male]]
+                  [["Ivan" 15] ["Oleg" 66] ["Darya" 32]]
+                  '[[(male ?x)
+                     [?x :male]]
+                    [(adult ?y)
+                     [?y ?a]
+                     [(>= ?a 18)]]])
+           #{["Oleg"]}))))
 
 (deftest test-aggregates
   (let [monsters [ ["Cerberus" 3]
@@ -585,9 +620,9 @@
 
 (deftest test-pr-read
   (binding [cljs.reader/*tag-table* (atom {"datascript/Datom" d/datom-from-reader})]
-    (let [d (d/Datom. 1 :name 3 17 true)]
+    (let [d (dc/Datom. 1 :name 3 17 true)]
       (is (= d (cljs.reader/read-string (pr-str d)))))
-    (let [d (d/Datom. 1 :name 3 nil nil)]
+    (let [d (dc/Datom. 1 :name 3 nil nil)]
       (is (= d (cljs.reader/read-string (pr-str d))))))
   
   (let [db (-> (d/empty-db)
@@ -601,4 +636,3 @@
       (is (= db (cljs.reader/read-string (pr-str db)))))))
 
 ;; (t/test-ns 'test.datascript)
-
