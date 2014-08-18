@@ -276,3 +276,9 @@
               [1 :name "Alex2"  (+ d/tx0 3) true]  ;;         + add
               [4 :name "Evgeny" (+ d/tx0 3) false]}]))))
 
+(comment
+
+
+  (t/test-ns 'test.analyze)
+  )
+
