@@ -1,7 +1,4 @@
-(def version "0.1.6-analyze-q")
-=======
-(def version "0.2.0")
->>>>>>> remotes/tonsky/master
+(def version "0.2.0-analyze-q")
 
 (defproject datascript version
   :description "An implementation of Datomic in-memory database and Datalog query engine in ClojureScript"
