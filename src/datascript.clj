@@ -23,3 +23,28 @@
 
 (defmacro case-tree [qs vs]
   (-case-tree qs vs))
+
+(defmacro defquery [name params query & sources]
+  (let [cache-key? (= :cache params)
+        params (if cache-key? (first sources) params)
+        params (into '[_] params)                           ;Add the first argument to a Protocol method call
+        query (if cache-key? (second sources) query)
+        sources (if cache-key? (nthrest sources 2) sources)
+        cache? (if cache-key? query false)]
+    (if cache?
+      `(let [cached-query# (cljs.core/atom #{})]
+         (def ~name
+           (reify cljs.core/IFn
+             (~'-invoke ~'[_] (cljs.core/deref cached-query#))
+             (~'-invoke ~params (cljs.core/reset! cached-query# (datascript/q ~query ~@sources)))
+             datascript/IndexKeys
+             (~'get-index-keys ~params (~'-> (datascript/analyze-q ~query ~@sources)
+                                        datascript/analyze-calls->index-keys)))))
+      `(def ~name
+         (reify cljs.core/IFn
+           (~'-invoke ~params (datascript/q ~query ~@sources))
+           datascript/IndexKeys
+           (~'get-index-keys ~params (~'-> (datascript/analyze-q ~query ~@sources)
+                                      datascript/analyze-calls->index-keys)))))))
+
+

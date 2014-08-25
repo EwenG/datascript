@@ -95,6 +95,36 @@
     [:avet a]
     [:avet a v]})
 
+(defprotocol IndexKeys
+  (get-index-keys
+    [this]
+    [this a]
+    [this a b]
+    [this a b c]
+    [this a b c d]
+    [this a b c d e]
+    [this a b c d e f]
+    [this a b c d e f g]
+    [this a b c d e f g h]
+    [this a b c d e f g h i]
+    [this a b c d e f g h i j]
+    [this a b c d e f g h i j k]
+    [this a b c d e f g h i j k l]
+    [this a b c d e f g h i j k l m]
+    [this a b c d e f g h i j k l m n]
+    [this a b c d e f g h i j k l m n o]
+    [this a b c d e f g h i j k l m n o p]
+    [this a b c d e f g h i j k l m n o p q]
+    [this a b c d e f g h i j k l m n o p q s]
+    [this a b c d e f g h i j k l m n o p q s t]
+    [this a b c d e f g h i j k l m n o p q s t rest]))
+
+(defn analyze-calls->index-keys [{:keys [index-keys calls]}]
+  (let [calls-index-keys (for [[fct & params] calls]
+                           (when (implements? IndexKeys fct)
+                             (apply get-index-keys fct params)))]
+    (apply set/union (conj calls-index-keys index-keys))))
+
 (defn transact! [conn entities]
   (let [report (-transact! conn entities)]
     (let [listeners (:listeners (meta conn))]
