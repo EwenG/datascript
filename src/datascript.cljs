@@ -119,6 +119,16 @@
     [this a b c d e f g h i j k l m n o p q s t]
     [this a b c d e f g h i j k l m n o p q s t rest]))
 
+(defn wrap-query [query wrap-fn]
+  (reify
+    cljs.core/IFn
+    (-invoke [this data]
+      (-> (query data)
+          wrap-fn))
+    IndexKeys
+    (get-index-keys [this conn]
+      (get-index-keys query conn))))
+
 (defn analyze-calls->index-keys [{:keys [index-keys calls]}]
   (let [calls-index-keys (for [[fct & params] calls]
                            (when (implements? IndexKeys fct)

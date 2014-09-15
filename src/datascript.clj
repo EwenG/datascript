@@ -24,7 +24,7 @@
 (defmacro case-tree [qs vs]
   (-case-tree qs vs))
 
-(defmacro defquery [name params query & sources]
+(defmacro query [params query & sources]
   (let [cache-key? (= :cache params)
         params (if cache-key? (first sources) params)
         params (into '[_] params)                           ;Add the first argument to a Protocol method call
@@ -33,18 +33,26 @@
         cache? (if cache-key? query false)]
     (if cache?
       `(let [cached-query# (cljs.core/atom #{})]
-         (def ~name
-           (reify cljs.core/IFn
-             (~'-invoke ~'[_] (cljs.core/deref cached-query#))
-             (~'-invoke ~params (cljs.core/reset! cached-query# (datascript/q ~query ~@sources)))
-             datascript/IndexKeys
-             (~'get-index-keys ~params (~'-> (datascript/analyze-q ~query ~@sources)
-                                        datascript/analyze-calls->index-keys)))))
-      `(def ~name
          (reify cljs.core/IFn
-           (~'-invoke ~params (datascript/q ~query ~@sources))
+           (~'-invoke ~'[_] (cljs.core/deref cached-query#))
+           (~'-invoke ~params (cljs.core/reset! cached-query# (datascript/q ~query ~@sources)))
            datascript/IndexKeys
            (~'get-index-keys ~params (~'-> (datascript/analyze-q ~query ~@sources)
-                                      datascript/analyze-calls->index-keys)))))))
+                                      datascript/analyze-calls->index-keys))))
+      `(reify cljs.core/IFn
+         (~'-invoke ~params (datascript/q ~query ~@sources))
+         datascript/IndexKeys
+         (~'get-index-keys ~params (~'-> (datascript/analyze-q ~query ~@sources)
+                                    datascript/analyze-calls->index-keys))))))
+
+(defmacro defquery [name params query & sources]
+  `(def ~name (query ~params ~query ~@sources)))
+
+(comment
+  (macroexpand-1 '(defquery get-display-main*
+                         [data] '[:find ?display-main
+                                  :where [_ :todo-mvc/display-main ?display-main]]
+                         data))
+  )
 
 
