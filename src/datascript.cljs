@@ -150,7 +150,7 @@
                                      (get single-index-keys))]
               (swap! all-callbacks into callbacks)))
           (doseq [callback @all-callbacks]
-            (publish callback report)))))
+            (publish callback (assoc report :tx-index-keys tx-index-keys))))))
     report))
            
 #_(defn listen!
