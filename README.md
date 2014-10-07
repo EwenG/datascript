@@ -15,16 +15,32 @@ The intention with DataScript is to be a basic building block in client-side app
 - Datalog query engine to answer non-trivial questions about current app state.
 - Structured format to track data coming in and out of DB. Datalog queries can be run against it too.
 
-Also check out this blog post about [how DataScript fits into the current webdev ecosystem](http://tonsky.me/blog/decomposing-web-app-development/).
+## Resources
+
+Blog post about [how DataScript fits into the current webdev ecosystem](http://tonsky.me/blog/decomposing-web-app-development/).
+
+Sample application using DataScript: [CatChat](https://github.com/tonsky/datascript-chat)
+
+Detailed CatChat [code walkthrough](http://tonsky.me/datascript-chat/)
+
+Flickr gallery viewer using DataScript: [Showkr](https://github.com/piranha/showkr)
 
 ## Usage examples [![Build Status](https://travis-ci.org/tonsky/datascript.svg?branch=master)](https://travis-ci.org/tonsky/datascript)
 
 ```clj
 :dependencies [
-  [org.clojure/clojurescript "0.0-2268"]
+  [org.clojure/clojurescript "0.0-2341"]
   ...
-  [datascript "0.1.6"]
+  [datascript "0.4.1"]
 ]
+
+;; for advanced optimizations externs are needed
+:cljsbuild { :builds [
+  :compiler {
+    :externs ["datascript/externs.js"]
+    :optimizations :advanced
+  }
+]}
 ```
 
 ```clj
@@ -95,31 +111,36 @@ Also check out this blog post about [how DataScript fits into the current webdev
 DataScript can be used from any JS engine without additional dependencies:
 
 ```html
-<script src="datascript-0.1.6.min.js"></script>
+<script src="datascript-0.4.1.min.js"></script>
 ```
 
-[Download datascript-0.1.6.min.js](https://github.com/tonsky/datascript/releases/download/0.1.6/datascript-0.1.6.min.js), 35k gzipped.
+[Download datascript-0.4.1.min.js](https://github.com/tonsky/datascript/releases/download/0.4.1/datascript-0.4.1.min.js), 43k gzipped.
 
 Queries:
 
 * Query and rules should be EDN passed as strings
 * Results of `q` are returned as regular JS arrays
 
+Entities:
+
+* Entities returned by `entity` call are lazy as in Clojure
+* Use `e.get("prop")`, `e.get(":db/id")`, `e.db` to access entity properties
+* Entities implement ECMAScript 6 Map interface (has/get/keys/...)
+
 Transactions:
 
 * Use strings such as `":db/id"`, `":db/add"`, etc. instead of db-namespaced keywords
-* Use regular JS arrays and objects to pass data to `transact` and `with_datoms`
+* Use regular JS arrays and objects to pass data to `transact` and `db_with`
 
 Transaction reports:
 
-* `report.tempids` has string keys (`"-1"` for entity tempid `-1`)
-* `report.tx_data` is list of objects with `e`, `a`, `v`, `tx` and `added` keys (instead of Datoms)
+* `report.tempids` has string keys (`"-1"` for entity tempid `-1`), use `resolve_tempid` to set up a correspondence
 
 Check out [test/js/js.html](test/js/js.html) for usage examples.
 
 ## Project status
 
-Pre-alpha quality. I spent just one week on implementation — it’s straightforward, non-optimized and has no meaningful error reporting.
+Alpha quality. Half of the features done, a lot of cases where error reporting is missing, no docs (use examples & Datomic documentation).
 
 The following features are supported:
 
@@ -127,6 +148,7 @@ The following features are supported:
 * Triple store model
 * EAVT, AEVT and AVET indexes
 * Multi-valued attributes via `:db/cardinality :db.cardinality/many`
+* Lazy entities and `:db/valueType :db.type/ref` auto-expansion
 * Database “mutations” via `transact!`
 * Callback-based analogue to txReportQueue via `listen!`
 * Direct index lookup and iteration via `datoms` and `seek-datoms`
@@ -149,16 +171,15 @@ Interface differences:
 * Instead of `#db/id[:db.part/user -100]` just use `-100` in place of `:db/id` or entity id
 * Transactor functions can be called as `[:db.fn/call f args]` where `f` is a function reference and will take db as first argument (thx [@thegeez](https://github.com/thegeez))
 * Additional `:db.fn/retractAttribute` shortcut
-* `transact!` and `transact` return `TxReport`, `with` returns new DB value
 
 Expected soon:
 
 * Better error reporting
 * Support for components in schema
-* Direct access to indexes
-* Passing DB to rule
-* Proper API docs
-* Moar speed
+* Proper documentation
+* Lookup refs
+* Fast db serialization and deserialization
+* Unique constraints, upsert?
 
 ## Differences from Datomic
 
@@ -166,7 +187,7 @@ Expected soon:
 * Runs in a browser
 * Simplified schema, not queryable
 * No need to declare attributes except for `:db/cardinality` `:db.cardinality/many` and `:db/valueType` `:db.type/ref`
-* Any value can be used as value. It’s better if they are immutable and fast to compare
+* Any type can be used for values. It’s better if values are immutable and fast to compare
 * No `db/ident` attributes, keywords are _literally_ attribute values, no integer id behind them
 * AVET index for all datoms
 * No schema migrations

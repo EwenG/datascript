@@ -2,29 +2,31 @@
   (:require-macros
     [cemerick.cljs.test :refer (is deftest with-test run-tests testing test-var)])
   (:require
-    [cemerick.cljs.test :as t]
-    [datascript :as d]))
+    [datascript.core :as dc]
+    [datascript :as d]
+    [cljs.reader]
+    [cemerick.cljs.test :as t]))
 
 (enable-console-print!)
 
 (deftest test-with
   (let [db  (-> (d/empty-db {:aka { :db/cardinality :db.cardinality/many }})
-                (d/with [[:db/add 1 :name "Ivan"]])
-                (d/with [[:db/add 1 :name "Petr"]])
-                (d/with [[:db/add 1 :aka  "Devil"]])
-                (d/with [[:db/add 1 :aka  "Tupen"]]))]
-    
+                (d/db-with [[:db/add 1 :name "Ivan"]])
+                (d/db-with [[:db/add 1 :name "Petr"]])
+                (d/db-with [[:db/add 1 :aka  "Devil"]])
+                (d/db-with [[:db/add 1 :aka  "Tupen"]]))]
+
     (is (= (d/q '[:find ?v
                   :where [1 :name ?v]] db)
            #{["Petr"]}))
     (is (= (d/q '[:find ?v
                   :where [1 :aka ?v]] db)
            #{["Devil"] ["Tupen"]}))
-    
+
     (testing "Retract"
       (let [db  (-> db
-                  (d/with [[:db/retract 1 :name "Petr"]])
-                  (d/with [[:db/retract 1 :aka  "Devil"]]))]
+                  (d/db-with [[:db/retract 1 :name "Petr"]])
+                  (d/db-with [[:db/retract 1 :aka  "Devil"]]))]
 
         (is (= (d/q '[:find ?v
                       :where [1 :name ?v]] db)
@@ -32,44 +34,52 @@
         (is (= (d/q '[:find ?v
                       :where [1 :aka ?v]] db)
                #{["Tupen"]}))
-        
-        (is (= (d/entity db 1) { :db/id 1, :aka ["Tupen"] }))))
-    
+
+        (is (= (into {} (d/entity db 1)) { :aka #{"Tupen"} }))))
+
     (testing "Cannot retract what's not there"
       (let [db  (-> db
-                    (d/with [[:db/retract 1 :name "Ivan"]]))]
+                    (d/db-with [[:db/retract 1 :name "Ivan"]]))]
         (is (= (d/q '[:find ?v
                       :where [1 :name ?v]] db)
                #{["Petr"]}))))))
 
 (deftest test-retract-fns
-  (let [db (-> (d/empty-db {:aka { :db/cardinality :db.cardinality/many }})
-               (d/with [ { :db/id 1, :name  "Ivan", :age 15, :aka ["X" "Y" "Z"] }
-                         { :db/id 2, :name  "Petr", :age 37 } ]))]
-    (let [db (d/with db [ [:db.fn/retractEntity 1] ])]
+  (let [db (-> (d/empty-db {:aka    { :db/cardinality :db.cardinality/many }
+                            :friend { :db/valueType :db.type/ref }})
+               (d/db-with [ { :db/id 1, :name  "Ivan", :age 15, :aka ["X" "Y" "Z"], :friend 2 }
+                            { :db/id 2, :name  "Petr", :age 37 } ]))]
+    (let [db (d/db-with db [ [:db.fn/retractEntity 1] ])]
       (is (= (d/q '[:find ?a ?v
                     :where [1 ?a ?v]] db)
              #{}))
       (is (= (d/q '[:find ?a ?v
                     :where [2 ?a ?v]] db)
              #{[:name "Petr"] [:age 37]})))
+
+    (testing "Retract entitiy with incoming refs"
+      (is (= (d/q '[:find ?e :where [1 :friend ?e]] db)
+             #{[2]}))
+      
+      (let [db (d/db-with db [ [:db.fn/retractEntity 2] ])]
+        (is (= (d/q '[:find ?e :where [1 :friend ?e]] db)
+               #{}))))
     
-    (let [db (d/with db [ [:db.fn/retractAttribute 1 :name] ])]
+    (let [db (d/db-with db [ [:db.fn/retractAttribute 1 :name] ])]
       (is (= (d/q '[:find ?a ?v
                     :where [1 ?a ?v]] db)
-             #{[:age 15] [:aka "X"] [:aka "Y"] [:aka "Z"]}))
+             #{[:age 15] [:aka "X"] [:aka "Y"] [:aka "Z"] [:friend 2]}))
       (is (= (d/q '[:find ?a ?v
                     :where [2 ?a ?v]] db)
              #{[:name "Petr"] [:age 37]})))
-    
-    (let [db (d/with db [ [:db.fn/retractAttribute 1 :aka] ])]
+
+    (let [db (d/db-with db [ [:db.fn/retractAttribute 1 :aka] ])]
       (is (= (d/q '[:find ?a ?v
                     :where [1 ?a ?v]] db)
-             #{[:name "Ivan"] [:age 15]}))
+             #{[:name "Ivan"] [:age 15] [:friend 2]}))
       (is (= (d/q '[:find ?a ?v
                     :where [2 ?a ?v]] db)
              #{[:name "Petr"] [:age 37]})))))
-
 
 (deftest test-transact!
   (let [conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }})]
@@ -77,13 +87,35 @@
     (d/transact! conn [[:db/add 1 :name "Petr"]])
     (d/transact! conn [[:db/add 1 :aka  "Devil"]])
     (d/transact! conn [[:db/add 1 :aka  "Tupen"]])
-    
+
     (is (= (d/q '[:find ?v
                   :where [1 :name ?v]] @conn)
            #{["Petr"]}))
     (is (= (d/q '[:find ?v
                   :where [1 :aka ?v]] @conn)
            #{["Devil"] ["Tupen"]}))))
+
+(deftest test-db-fn-cas
+  (let [conn (d/create-conn)]
+    (d/transact! conn [[:db/add 1 :weight 200]])
+    (d/transact! conn [[:db.fn/cas 1 :weight 200 300]])
+    (is (= (:weight (d/entity @conn 1)) 300))
+    (try
+      (d/transact! conn [[:db.fn/cas 1 :weight 200 210]])
+      (throw (js/Error. "expected :db.fn/cas to throw"))
+      (catch js/Error e
+        (is (= (.-message e) ":db.fn/cas failed on datom [1 :weight 300], expected 200")))))
+  
+  (let [conn (d/create-conn {:label { :db/cardinality :db.cardinality/many }})]
+    (d/transact! conn [[:db/add 1 :label :x]])
+    (d/transact! conn [[:db/add 1 :label :y]])
+    (d/transact! conn [[:db.fn/cas 1 :label :y :z]])
+    (is (= (:label (d/entity @conn 1)) #{:x :y :z}))
+    (try
+      (d/transact! conn [[:db.fn/cas 1 :label :s :t]])
+      (throw (js/Error. "expected :db.fn/cas to throw"))
+      (catch js/Error e
+        (is (= (.-message e) ":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"))))))
 
 (deftest test-db-fn
   (let [conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }})
@@ -152,13 +184,65 @@
     (is (= (d/q q @conn "Boris") #{["Oleg"]}))
     (is (= (d/q q @conn "Oleg") #{["Boris"]}))))
 
+
 (deftest test-entity
-  (let [conn (d/create-conn {:aka {:db/cardinality :db.cardinality/many}})
-        p1   {:db/id 1, :name "Ivan", :age 19, :aka ["X" "Y"]}
-        p2   {:db/id 2, :name "Ivan", :sex "male", :aka ["Z"]}
-        t1   (d/transact! conn [p1 p2])]
-    (is (= (d/entity @conn 1) p1))
-    (is (= (d/entity @conn 2) p2))))
+  (let [db (-> (d/empty-db {:aka {:db/cardinality :db.cardinality/many}})
+               (d/db-with [{:db/id 1, :name "Ivan", :age 19, :aka ["X" "Y"]}
+                           {:db/id 2, :name "Ivan", :sex "male", :aka ["Z"]}]))
+        e  (d/entity db 1)]
+    (is (= (:db/id e) 1))
+    (is (identical? (d/entity-db e) db))
+    (is (= (:name e) "Ivan"))
+    (is (= (:age  e) 19))
+    (is (= (:aka  e) #{"X" "Y"}))
+    (is (= (into {} e)
+           {:name "Ivan", :age 19, :aka #{"X" "Y"}}))
+    (is (= (into {} (d/entity db 1))
+           {:name "Ivan", :age 19, :aka #{"X" "Y"}}))
+    (is (= (into {} (d/entity db 2))
+           {:name "Ivan", :sex "male", :aka #{"Z"}}))
+
+    (is (= (pr-str (d/entity db 1) "{:db/id 1}")))
+    (is (= (pr-str (let [e (d/entity db 1)] (:name e) e)) "{:name \"Ivan\", :db/id 1}"))
+    (is (= (pr-str (let [e (d/entity db 1)] (:unknown e) e)) "{:db/id 1}"))))
+
+(deftest test-entity-refs
+  (let [db (-> (d/empty-db {:father   {:db/valueType   :db.type/ref}
+                            :children {:db/valueType   :db.type/ref
+                                       :db/cardinality :db.cardinality/many}})
+               (d/db-with
+                 [{:db/id 1, :children [10]}
+                  {:db/id 10, :father 1, :children [100 101]}
+                  {:db/id 100, :father 10}]))
+        e  #(d/entity db %)]
+
+    (is (= (:children (e 1))   #{(e 10)}))
+    (is (= (:children (e 10))  #{(e 100) (e 101)}))
+
+    (testing "empty attribute"
+      (is (= (:children (e 100)) nil)))
+
+    (testing "nested navigation"
+      (is (= (-> (e 1) :children first :children) #{(e 100) (e 101)}))
+      (is (= (-> (e 10) :children first :father) (e 10)))
+      (is (= (-> (e 10) :father :children) #{(e 10)}))
+
+      (testing "after touch"
+        (let [e1  (e 1)
+              e10 (e 10)]
+          (d/touch e1)
+          (d/touch e10)
+          (is (= (-> e1 :children first :children) #{(e 100) (e 101)}))
+          (is (= (-> e10 :children first :father) (e 10)))
+          (is (= (-> e10 :father :children) #{(e 10)})))))
+
+    (testing "backward navigation"
+      (is (= (:_children (e 1))  nil))
+      (is (= (:_father   (e 1))  #{(e 10)}))
+      (is (= (:_children (e 10)) #{(e 1)}))
+      (is (= (:_father   (e 10)) #{(e 100)}))
+      (is (= (-> (e 100) :_children first :_children) #{(e 1)}))
+    )))
 
 (deftest test-listen!
   (let [conn    (d/create-conn)
@@ -184,33 +268,55 @@
              [1 :name "Alex2"  (+ d/tx0 3) true]  ;;         + add
              [4 :name "Evgeny" (+ d/tx0 3) false]]]))))
 
-
 (deftest test-explode
-  (let [conn (d/create-conn { :aka { :db/cardinality :db.cardinality/many }
-                              :also { :db/cardinality :db.cardinality/many} })]
-    (d/transact! conn [{:db/id -1
-                        :name  "Ivan"
-                        :age   16
-                        :aka   ["Devil" "Tupen"]
-                        :also  "ok"}])
-    (is (= (d/q '[:find  ?n ?a
-                  :where [1 :name ?n]
-                         [1 :age ?a]] @conn)
-           #{["Ivan" 16]}))
-    (is (= (d/q '[:find  ?v
-                  :where [1 :also ?v]] @conn)
-           #{["ok"]}))
-    (is (= (d/q '[:find  ?v
-                  :where [1 :aka ?v]] @conn)
-           #{["Devil"] ["Tupen"]}))))
+  (doseq [coll [["Devil" "Tupen"]
+                #{"Devil" "Tupen"}
+                '("Devil" "Tupen")
+                #js ["Devil" "Tupen"]]]
+    (testing coll
+      (let [conn (d/create-conn { :aka { :db/cardinality :db.cardinality/many }
+                                 :also { :db/cardinality :db.cardinality/many} })]
+        (d/transact! conn [{:db/id -1
+                            :name  "Ivan"
+                            :age   16
+                            :aka   coll
+                            :also  "ok"}])
+        (is (= (d/q '[:find  ?n ?a
+                      :where [1 :name ?n]
+                      [1 :age ?a]] @conn)
+               #{["Ivan" 16]}))
+        (is (= (d/q '[:find  ?v
+                      :where [1 :also ?v]] @conn)
+               #{["ok"]}))
+        (is (= (d/q '[:find  ?v
+                      :where [1 :aka ?v]] @conn)
+               #{["Devil"] ["Tupen"]}))))))
 
+(deftest test-explode-ref
+  (let [db0 (d/empty-db { :children { :db/valueType :db.type/ref
+                                      :db/cardinality :db.cardinality/many } })]
+    (let [db (d/db-with db0 [{:db/id -1, :name "Ivan", :children [-2 -3]}
+                             {:db/id -2, :name "Petr"} 
+                             {:db/id -3, :name "Evgeny"}])]
+      (is (= (d/q '[:find ?n
+                    :where [_ :children ?e]
+                           [?e :name ?n]] db)
+             #{["Petr"] ["Evgeny"]})))
+    
+    (let [db (d/db-with db0 [{:db/id -1, :name "Ivan"}
+                             {:db/id -2, :name "Petr", :_children -1} 
+                             {:db/id -3, :name "Evgeny", :_children -1}])]
+      (is (= (d/q '[:find ?n
+                    :where [_ :children ?e]
+                           [?e :name ?n]] db)
+             #{["Petr"] ["Evgeny"]})))))
 
 (deftest test-joins
   (let [db (-> (d/empty-db)
-               (d/with [ { :db/id 1, :name  "Ivan", :age   15 }
-                         { :db/id 2, :name  "Petr", :age   37 }
-                         { :db/id 3, :name  "Ivan", :age   37 }
-                         { :db/id 4, :age 15 }]))]
+               (d/db-with [ { :db/id 1, :name  "Ivan", :age   15 }
+                            { :db/id 2, :name  "Petr", :age   37 }
+                            { :db/id 3, :name  "Ivan", :age   37 }
+                            { :db/id 4, :age 15 }]))]
     (is (= (d/q '[:find ?e
                   :where [?e :name]] db)
            #{[1] [2] [3]}))
@@ -234,12 +340,12 @@
 
 (deftest test-q-many
   (let [db (-> (d/empty-db {:aka {:db/cardinality :db.cardinality/many}})
-               (d/with [ [:db/add 1 :name "Ivan"]
-                         [:db/add 1 :aka  "ivolga"]
-                         [:db/add 1 :aka  "pi"]
-                         [:db/add 2 :name "Petr"]
-                         [:db/add 2 :aka  "porosenok"]
-                         [:db/add 2 :aka  "pi"] ]))]
+               (d/db-with [ [:db/add 1 :name "Ivan"]
+                            [:db/add 1 :aka  "ivolga"]
+                            [:db/add 1 :aka  "pi"]
+                            [:db/add 2 :name "Petr"]
+                            [:db/add 2 :aka  "porosenok"]
+                            [:db/add 2 :aka  "pi"] ]))]
     (is (= (d/q '[:find  ?n1 ?n2
                   :where [?e1 :aka ?x]
                          [?e2 :aka ?x]
@@ -261,7 +367,7 @@
                           [?e :name ?n]
                           [?e :age  ?a]] db)
            #{["Ivan" 19]})))
-  
+
   (testing "Query over long tuples"
     (let [db [ [1 :name "Ivan" 945 :db/add]
                [1 :age  39     999 :db/retract]] ]
@@ -275,9 +381,9 @@
 
 (deftest test-q-in
   (let [db (-> (d/empty-db)
-               (d/with [ { :db/id 1, :name  "Ivan", :age   15 }
-                         { :db/id 2, :name  "Petr", :age   37 }
-                         { :db/id 3, :name  "Ivan", :age   37 }]))
+               (d/db-with [ { :db/id 1, :name  "Ivan", :age   15 }
+                            { :db/id 2, :name  "Petr", :age   37 }
+                            { :db/id 3, :name  "Ivan", :age   37 }]))
         query '{:find  [?e]
                 :in    [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}]
@@ -285,14 +391,14 @@
            #{[1] [3]}))
     (is (= (d/q query db :age 37)
            #{[2] [3]}))
-    
+
     (testing "Named DB"
       (is (= (d/q '[:find  ?a ?v
                     :in    $db ?e
                     :where [$db ?e ?a ?v]] db 1)
              #{[:name "Ivan"]
                [:age 15]})))
-    
+
     (testing "DB join with collection"
       (is (= (d/q '[:find  ?e ?email
                     :in    $ $b
@@ -304,7 +410,7 @@
              #{[1 "ivan@mail.ru"]
                [2 "petr@gmail.com"]
                [3 "ivan@mail.ru"]})))
-    
+
     (testing "Relation binding"
       (is (= (d/q '[:find  ?e ?email
                     :in    $ [[?n ?email]]
@@ -315,7 +421,7 @@
              #{[1 "ivan@mail.ru"]
                [2 "petr@gmail.com"]
                [3 "ivan@mail.ru"]})))
-    
+
     (testing "Tuple binding"
       (is (= (d/q '[:find  ?e
                     :in    $ [?name ?age]
@@ -323,14 +429,14 @@
                            [?e :age ?age]]
                   db ["Ivan" 37])
              #{[3]})))
-    
+
     (testing "Collection binding"
       (is (= (d/q '[:find  ?attr ?value
                     :in    $ ?e [?attr ...]
                     :where [?e ?attr ?value]]
                   db 1 [:name :age])
              #{[:name "Ivan"] [:age 15]}))))
-  
+
   (testing "Query without DB"
     (is (= (d/q '[:find ?a ?b
                   :in   ?a ?b]
@@ -344,7 +450,7 @@
                 :where [(> ?v 1)]]
               {:a 1, :b 2, :c 3})
          #{[:b 2] [:c 3]}))
-  
+
   (is (= (d/q '[:find  ?k ?min ?max
                 :in    [[?k ?v] ...] ?minmax
                 :where [(?minmax ?v) [?min ?max]]
@@ -354,7 +460,7 @@
                :c [3]}
               #(vector (reduce min %) (reduce max %)))
          #{[:a 1 4] [:b 5 7]}))
-  
+
   (is (= (d/q '[:find  ?k ?x
                 :in    [[?k [?min ?max]] ...] ?range
                 :where [(?range ?min ?max) [?x ...]]
@@ -365,19 +471,58 @@
          #{[:a 2] [:a 4] [:a 6]
            [:b 2]})))
 
+(deftest test-query-fns
+  (testing "ground"
+    (is (= (d/q '[:find ?vowel
+                  :where [(ground [:a :e :i :o :u]) [?vowel ...]]])
+           #{[:a] [:e] [:i] [:o] [:u]})))
+  
+  (testing "predicate without free variables"
+    (is (= (d/q '[:find ?x
+                  :in [?x ...]
+                  :where [(> 2 1)]] [:a :b :c])
+           #{[:a] [:b] [:c]})))
 
-(deftest test-user-funs
-  (let [db (-> (d/empty-db)
-               (d/with [ { :db/id 1, :name  "Ivan",  :age   15 }
-                         { :db/id 2, :name  "Petr",  :age   22 }
-                         { :db/id 3, :name  "Slava", :age   37 }]))]
+  (let [db (-> (d/empty-db {:parent {:parent {:db/valueType :db.valueType/ref}}})
+               (d/db-with [ { :db/id 1, :name  "Ivan",  :age   15 }
+                            { :db/id 2, :name  "Petr",  :age   22, :height 240 :parent 1}
+                            { :db/id 3, :name  "Slava", :age   37 :parent 2}]))]
+
+    (testing "get-else"
+      (is (= (d/q '[:find ?e ?age ?height
+                    :in $
+                    :where [?e :age ?age]
+                           [(get-else $ ?e :height 300) ?height]] db)
+             #{[1 15 300] [2 22 240] [3 37 300]})))
+
+    (testing "get-some"
+      (is (= (d/q '[:find ?e ?v
+                    :in $
+                    :where [?e :name ?name]
+                           [(get-some $ ?e :height :age) ?v]] db)
+             #{[1 15] [2 240] [3 37]})))
+
+    (testing "missing?"
+      (is (= (d/q '[:find ?e ?age
+                    :in $
+                    :where [?e :age ?age]
+                           [(missing? $ ?e :height)]] db)
+             #{[1 15] [3 37]})))
+
+    (testing "missing? back-ref"
+      (is (= (d/q '[:find ?e
+                    :in $
+                    :where [?e :age ?age]
+                    [(missing? $ ?e :_parent)]] db)
+             #{[3]})))
+
     (testing "Built-in predicate"
       (is (= (d/q '[:find  ?e1 ?e2
                     :where [?e1 :age ?a1]
                            [?e2 :age ?a2]
                            [(< ?a1 18 ?a2)]] db)
              #{[1 2] [1 3]})))
-    
+
     (testing "Passing predicate as source"
       (is (= (d/q '[:find  ?e
                     :in    $ ?adult
@@ -386,7 +531,7 @@
                   db
                   #(> % 18))
              #{[2] [3]})))
-    
+
     (testing "Calling a function"
       (is (= (d/q '[:find  ?e1 ?e2 ?e3
                     :where [?e1 :age ?a1]
@@ -409,7 +554,7 @@
                '[[(follow ?x ?y)
                   [?x :follow ?y]]])
            #{[1 2] [2 3] [3 4] [2 4] [5 3] [4 6]}))
-    
+
     (testing "Rule with branches"
       (is (= (d/q '[:find  ?e2
                     :in    $ ?e1 %
@@ -422,8 +567,8 @@
                     [?e2 :follow ?t]
                     [?t  :follow ?e1]]])
              #{[2] [3] [4]})))
-    
-    (testing "Recursive rule"
+
+    (testing "Recursive rules"
       (is (= (d/q '[:find  ?e2
                     :in    $ ?e1 %
                     :where (follow ?e1 ?e2)]
@@ -434,8 +579,28 @@
                    [(follow ?e1 ?e2)
                     [?e1 :follow ?t]
                     (follow ?t ?e2)]])
-             #{[2] [3] [4] [6]})))
-    
+             #{[2] [3] [4] [6]}))
+
+      (is (= (d/q '[:find ?e1 ?e2
+                     :in $ %
+                     :where (follow ?e1 ?e2)]
+                    [[1 :follow 2] [2 :follow 3]]
+                   '[[(follow ?e1 ?e2)
+                      [?e1 :follow ?e2]]
+                     [(follow ?e1 ?e2)
+                      (follow ?e2 ?e1)]])
+           #{[1 2] [2 3] [2 1] [3 2]}))
+
+      (is (= (d/q '[:find ?e1 ?e2
+                     :in $ %
+                     :where (follow ?e1 ?e2)]
+                    [[1 :follow 2] [2 :follow 3] [3 :follow 1]]
+                   '[[(follow ?e1 ?e2)
+                      [?e1 :follow ?e2]]
+                     [(follow ?e1 ?e2)
+                      (follow ?e2 ?e1)]])
+           #{[1 2] [2 3] [3 1] [2 1] [3 2] [1 3]})))
+
     (testing "Mutually recursive rules"
       (is (= (d/q '[:find  ?e1 ?e2
                     :in    $ %
@@ -460,8 +625,21 @@
               [1 3] [1 5]
               [2 3] [2 5]
               [3 5]
-              [4 5]})))))
+              [4 5]}))))
 
+  (testing "Specifying db to rule"
+    (is (= (d/q '[ :find ?n
+                    :in   $sexes $ages %
+                    :where ($sexes male ?n)
+                           ($ages adult ?n) ]
+                  [["Ivan" :male] ["Darya" :female] ["Oleg" :male] ["Igor" :male]]
+                  [["Ivan" 15] ["Oleg" 66] ["Darya" 32]]
+                  '[[(male ?x)
+                     [?x :male]]
+                    [(adult ?y)
+                     [?y ?a]
+                     [(>= ?a 18)]]])
+           #{["Oleg"]}))))
 
 (deftest test-aggregates
   (let [monsters [ ["Cerberus" 3]
@@ -469,20 +647,20 @@
                    ["Cyclops" 1]
                    ["Chimera" 1] ]]
     (testing "with"
-      (is (= (d/q '[ :find ?heads 
-                     :with ?monster 
+      (is (= (d/q '[ :find ?heads
+                     :with ?monster
                      :in   [[?monster ?heads]] ]
                   [ ["Medusa" 1]
                     ["Cyclops" 1]
                     ["Chimera" 1] ])
              [[1] [1] [1]])))
-    
+
     (testing "Wrong grouping without :with"
       (is (= (d/q '[ :find (sum ?heads)
                      :in   [[?monster ?heads]] ]
                   monsters)
              [[4]])))
-    
+
     (testing "Multiple aggregates, correct grouping with :with"
       (is (= (d/q '[ :find (sum ?heads) (min ?heads) (max ?heads) (count ?heads)
                      :with ?monster
@@ -498,7 +676,7 @@
                        3))
              #{[:red  [3 4 5] [1 2 3]]
                [:blue [7 8]   [7 8]]})))
-    
+
     (testing "Custom aggregates"
       (is (= (set (d/q '[ :find ?color (?agg ?x)
                           :in   [[?color ?x]] ?agg ]
@@ -510,12 +688,12 @@
 (deftest test-datoms
   (let [dvec #(vector (.-e %) (.-a %) (.-v %))
         db (-> (d/empty-db)
-               (d/with [[:db/add 1 :name "Petr"]
-                        [:db/add 1 :age 44]
-                        [:db/add 2 :name "Ivan"]
-                        [:db/add 2 :age 25]
-                        [:db/add 3 :name "Sergey"]
-                        [:db/add 3 :age 11]]))]
+               (d/db-with [ [:db/add 1 :name "Petr"]
+                            [:db/add 1 :age 44]
+                            [:db/add 2 :name "Ivan"]
+                            [:db/add 2 :age 25]
+                            [:db/add 3 :name "Sergey"]
+                            [:db/add 3 :age 11] ]))]
     (testing "Main indexes, sort order"
       (is (= (map dvec (d/datoms db :aevt))
              [ [1 :age 44]
@@ -528,7 +706,7 @@
       (is (= (map dvec (d/datoms db :eavt))
              [ [1 :age 44]
                [1 :name "Petr"]
-               [2 :age 25]      
+               [2 :age 25]
                [2 :name "Ivan"]
                [3 :age 11]
                [3 :name "Sergey"] ]))
@@ -540,7 +718,7 @@
                [2 :name "Ivan"]
                [1 :name "Petr"]
                [3 :name "Sergey"] ])))
-    
+
     (testing "Components filtration"
       (is (= (map dvec (d/datoms db :eavt 1))
              [ [1 :age 44]
@@ -557,13 +735,13 @@
 (deftest test-seek-datoms
   (let [dvec #(vector (.-e %) (.-a %) (.-v %))
         db (-> (d/empty-db)
-               (d/with [[:db/add 1 :name "Petr"]
-                        [:db/add 1 :age 44]
-                        [:db/add 2 :name "Ivan"]
-                        [:db/add 2 :age 25]
-                        [:db/add 3 :name "Sergey"]
-                        [:db/add 3 :age 11]]))]
-    
+               (d/db-with [[:db/add 1 :name "Petr"]
+                           [:db/add 1 :age 44]
+                           [:db/add 2 :name "Ivan"]
+                           [:db/add 2 :age 25]
+                           [:db/add 3 :name "Sergey"]
+                           [:db/add 3 :age 11]]))]
+
     (testing "Non-termination"
       (is (= (map dvec (d/seek-datoms db :avet :age 10))
              [ [3 :age 11]
@@ -577,28 +755,73 @@
       (is (= (map dvec (d/seek-datoms db :avet :name "P"))
              [ [1 :name "Petr"]
                [3 :name "Sergey"] ])))
-    
+
     (testing "Exact value lookup"
       (is (= (map dvec (d/seek-datoms db :avet :name "Petr"))
              [ [1 :name "Petr"]
                [3 :name "Sergey"] ])))))
 
+(deftest test-index-range
+  (let [dvec #(vector (.-e %) (.-a %) (.-v %))
+        db    (d/db-with
+                (d/empty-db)
+                [ { :db/id 1 :name "Ivan"   :age 15 }
+                  { :db/id 2 :name "Oleg"   :age 20 }
+                  { :db/id 3 :name "Sergey" :age 7 }
+                  { :db/id 4 :name "Pavel"  :age 45 }
+                  { :db/id 5 :name "Petr"   :age 20 } ])]
+    (is (= (map dvec (d/index-range db :name "Pe" "S"))
+           [ [5 :name "Petr"] ]))
+    (is (= (map dvec (d/index-range db :name "O" "Sergey"))
+           [ [2 :name "Oleg"]
+             [4 :name "Pavel"]
+             [5 :name "Petr"]
+             [3 :name "Sergey"] ]))
+
+    (is (= (map dvec (d/index-range db :name nil "P"))
+           [ [1 :name "Ivan"]
+             [2 :name "Oleg"] ]))
+    (is (= (map dvec (d/index-range db :name "R" nil))
+           [ [3 :name "Sergey"] ]))
+    (is (= (map dvec (d/index-range db :name nil nil))
+           [ [1 :name "Ivan"]
+             [2 :name "Oleg"]
+             [4 :name "Pavel"]
+             [5 :name "Petr"]
+             [3 :name "Sergey"] ]))
+
+    (is (= (map dvec (d/index-range db :age 15 20))
+           [ [1 :age 15]
+             [2 :age 20]
+             [5 :age 20]]))
+    (is (= (map dvec (d/index-range db :age 7 45))
+           [ [3 :age 7]
+             [1 :age 15]
+             [2 :age 20]
+             [5 :age 20]
+             [4 :age 45] ]))
+    (is (= (map dvec (d/index-range db :age 0 100))
+           [ [3 :age 7]
+             [1 :age 15]
+             [2 :age 20]
+             [5 :age 20]
+             [4 :age 45] ]))))
+
 (deftest test-pr-read
   (binding [cljs.reader/*tag-table* (atom {"datascript/Datom" d/datom-from-reader})]
-    (let [d (d/Datom. 1 :name 3 17 true)]
+    (let [d (dc/Datom. 1 :name 3 17 true)]
       (is (= d (cljs.reader/read-string (pr-str d)))))
-    (let [d (d/Datom. 1 :name 3 nil nil)]
+    (let [d (dc/Datom. 1 :name 3 nil nil)]
       (is (= d (cljs.reader/read-string (pr-str d))))))
-  
+
   (let [db (-> (d/empty-db)
-               (d/with [[:db/add 1 :name "Petr"]
-                        [:db/add 1 :age 44]
-                        [:db/add 2 :name "Ivan"]
-                        [:db/add 2 :age 25]
-                        [:db/add 3 :name "Sergey"]
-                        [:db/add 3 :age 11]]))]
+               (d/db-with [ [:db/add 1 :name "Petr"]
+                            [:db/add 1 :age 44]
+                            [:db/add 2 :name "Ivan"]
+                            [:db/add 2 :age 25]
+                            [:db/add 3 :name "Sergey"]
+                            [:db/add 3 :age 11]]))]
     (binding [cljs.reader/*tag-table* (atom {"datascript/DB" d/db-from-reader})]
       (is (= db (cljs.reader/read-string (pr-str db)))))))
 
 ;; (t/test-ns 'test.datascript)
-
