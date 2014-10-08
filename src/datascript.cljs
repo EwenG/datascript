@@ -33,25 +33,32 @@
   (atom (empty-db schema)
         :meta { :listeners  (atom {}) }))
 
-(defn with [db tx-data]
-  (dc/transact-tx-data (dc/TxReport. db db [] {}) tx-data))
+(defn with
+  ([db tx-data]
+   (with db tx-data nil))
+  ([db tx-data tx-meta]
+   (dc/transact-tx-data (dc/TxReport. db db [] {} tx-meta)
+                        tx-data)))
 
 (defn db-with [db tx-data]
   (:db-after (with db tx-data)))
 
-(defn -transact! [conn tx-data]
+(defn -transact! [conn tx-data tx-meta]
   (let [report (atom nil)]
     (swap! conn (fn [db]
-                  (let [r (with db tx-data)]
+                  (let [r (with db tx-data tx-meta)]
                     (reset! report r)
                     (:db-after r))))
     @report))
 
-(defn transact! [conn tx-data]
-  (let [report (-transact! conn tx-data)]
-    (doseq [[_ callback] @(:listeners (meta conn))]
-      (callback report))
-    report))
+(defn transact!
+  ([conn tx-data]
+   (transact! conn tx-data nil))
+  ([conn tx-data tx-meta]
+   (let [report (-transact! conn tx-data tx-meta)]
+     (doseq [[_ callback] @(:listeners (meta conn))]
+       (callback report))
+     report)))
            
 (defn listen!
   ([conn callback] (listen! conn (rand) callback))
