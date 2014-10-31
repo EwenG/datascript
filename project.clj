@@ -1,4 +1,4 @@
-(defproject datascript "0.4.1"
+(defproject datascript "0.4.2"
   :description "An implementation of Datomic in-memory database and Datalog query engine in ClojureScript"
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
@@ -6,7 +6,7 @@
   
   :dependencies [
     [org.clojure/clojure "1.6.0"]
-    [org.clojure/clojurescript "0.0-2341"]
+    [org.clojure/clojurescript "0.0-2371"]
   ]
   :cljsbuild { 
     :builds [
